@@ -77,6 +77,42 @@ run:
 `.boxt/config.yaml` is the source of truth. Later milestones add VM lifecycle,
 execution, tools and workspaces.
 
+## Running commands
+
+```bash
+boxt                    # run the default target (same as `boxt run`)
+boxt run                # run the default target
+boxt run test           # run a named target
+boxt run -- npm test    # run an arbitrary command
+boxt shell              # interactive shell in the default workspace
+```
+
+Targets are explicit; boxt never treats an installed executable as a run target.
+An unknown target produces guidance:
+
+```text
+Error: unknown run target: codex
+
+Define it under run.targets in .boxt/config.yaml,
+or use `boxt run -- codex` to execute the command directly.
+```
+
+`interactive: true` on a target makes boxt request a PTY (needed for agents and
+REPLs). Arbitrary commands after `--` use a PTY when boxt is attached to a
+terminal. Guest exit statuses become boxt's exit status. A stopped VM is started
+automatically; pass `--no-start` to disable that.
+
+```yaml
+run:
+  default: dev
+  targets:
+    dev:
+      command: ["npm", "run", "dev"]
+    codex:
+      command: ["codex"]
+      interactive: true
+```
+
 ## VM lifecycle
 
 ```bash

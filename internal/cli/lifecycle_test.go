@@ -21,6 +21,7 @@ type fakeLimaRunner struct {
 	status   string
 	commands []command.Command
 	startErr error
+	shellErr error
 }
 
 func (f *fakeLimaRunner) Run(ctx context.Context, c command.Command) error {
@@ -45,6 +46,8 @@ func (f *fakeLimaRunner) Run(ctx context.Context, c command.Command) error {
 		f.status = "Stopped"
 	case "delete":
 		f.status = ""
+	case "shell":
+		return f.shellErr
 	}
 	return nil
 }

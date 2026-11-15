@@ -255,3 +255,8 @@ go build ./cmd/boxt
   validated with real `limactl 2.3.0`, project/workspace mounts, guest user `boxt`,
   port-conflict checks, `up`/`down`/`status`/`destroy`, auto-start helper, gated
   integration tests. Unit tests use a fake Lima runner.
+- **M3 complete** — single executor for non-interactive and PTY execution, target
+  resolution with no PATH fallback, arbitrary commands after `--`, auto-start and
+  `--no-start`, `boxt shell`, signal handling, exit-status propagation. Interactive
+  streams are inherited by `limactl shell`, which allocates the SSH PTY and handles
+  window resize; non-interactive streams are piped to avoid an unwanted PTY.

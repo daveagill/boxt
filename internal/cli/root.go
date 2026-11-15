@@ -43,6 +43,9 @@ type App struct {
 	// Provision is installed by the toolchain layer. It runs after the VM is
 	// running and before boxt reports the environment ready.
 	Provision func(ctx context.Context, p *project.Project) error
+
+	// PrepareCommand wraps guest argv with the internal toolchain environment.
+	PrepareCommand func(tools map[string]string, argv []string) []string
 }
 
 // New returns the production application wiring.
@@ -91,7 +94,7 @@ func NewRoot(app *App) *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
+			return app.run(cmd.Context(), nil, -1, false)
 		},
 	}
 	root.SetIn(app.In)
@@ -113,6 +116,8 @@ func NewRoot(app *App) *cobra.Command {
 	root.AddCommand(newDownCmd(app))
 	root.AddCommand(newStatusCmd(app))
 	root.AddCommand(newDestroyCmd(app))
+	root.AddCommand(newRunCmd(app))
+	root.AddCommand(newShellCmd(app))
 	root.AddCommand(newVersionCmd(app))
 	return root
 }
