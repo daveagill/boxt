@@ -245,3 +245,13 @@ go build ./cmd/boxt
   does not grant sudo, provisioning will use the supported cloud-init/provision path.
 - Port forwarding is optional and default-off; host-port conflict detection is done
   before VM start.
+
+## Progress log
+
+- **M1 complete** — Go module, Cobra CLI, config schema/validation/atomic node-preserving
+  edits, project discovery/canonical IDs, platform data dirs, `boxt init`, unit tests.
+  Commit `5325ea9`.
+- **M2 complete** — `limactl` adapter over a process-runner seam, generated Lima YAML
+  validated with real `limactl 2.3.0`, project/workspace mounts, guest user `boxt`,
+  port-conflict checks, `up`/`down`/`status`/`destroy`, auto-start helper, gated
+  integration tests. Unit tests use a fake Lima runner.

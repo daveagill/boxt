@@ -77,6 +77,46 @@ run:
 `.boxt/config.yaml` is the source of truth. Later milestones add VM lifecycle,
 execution, tools and workspaces.
 
+## VM lifecycle
+
+```bash
+boxt up        # create/start the VM; idempotent
+boxt status    # project, VM, mounts and declared tools
+boxt down      # stop, preserving guest state
+boxt destroy   # delete the VM and guest state (confirms unless --yes)
+```
+
+The VM name is derived from a SHA-256 project ID, so moving the project or using a
+symlink does not create a second VM unexpectedly. `boxt destroy` never deletes
+project files or Git workspaces.
+
+The host layout is:
+
+| Host | Guest |
+|---|---|
+| project root | `/workspace` |
+| `<data-dir>/workspaces/<project-id>` | `/workspaces/<project-id>` |
+
+`<data-dir>` is `~/Library/Application Support/boxt` on macOS and
+`${XDG_DATA_HOME:-~/.local/share}/boxt` on Linux. The host home directory and Docker
+socket are never mounted.
+
+### Port forwarding
+
+Guest services are not exposed by default. Request a forward explicitly:
+
+```yaml
+vm:
+  ports:
+    - guest: 3000
+      host: 3000
+      host_ip: 127.0.0.1   # default
+```
+
+boxt checks the host port before starting the VM and reports a conflict instead of
+silently choosing another port. Lima networking is convenient, not a hardened
+security boundary; see `plan.md` for the full model.
+
 ## Development
 
 ```bash

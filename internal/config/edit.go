@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/boxt/boxt/internal/fsutil"
 )
 
 // ErrToolNotFound is returned when removing an undeclared tool.
@@ -109,7 +110,7 @@ func mutateTools(path string, mutate func(*yaml.Node) error) error {
 		return fmt.Errorf("refusing to write invalid configuration: %w", err)
 	}
 
-	return writeFileAtomic(path, buf.Bytes(), info.Mode().Perm())
+	return fsutil.WriteFileAtomic(path, buf.Bytes(), info.Mode().Perm())
 }
 
 func findMapEntry(m *yaml.Node, name string) (key, value *yaml.Node) {
@@ -119,49 +120,4 @@ func findMapEntry(m *yaml.Node, name string) (key, value *yaml.Node) {
 		}
 	}
 	return nil, nil
-}
-
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create directory: %w", err)
-	}
-	if perm == 0 {
-		perm = 0o644
-	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temporary file: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func() {
-		tmp.Close()
-		os.Remove(tmpName)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		cleanup()
-		return fmt.Errorf("set permissions: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		cleanup()
-		return fmt.Errorf("write temporary file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return fmt.Errorf("sync temporary file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("close temporary file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("replace configuration: %w", err)
-	}
-	// Best-effort directory fsync; not all filesystems support it.
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nil
 }

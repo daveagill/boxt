@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,11 +11,13 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/boxt/boxt/internal/command"
 	"github.com/boxt/boxt/internal/git"
+	"github.com/boxt/boxt/internal/lima"
 	"github.com/boxt/boxt/internal/platform"
 	"github.com/boxt/boxt/internal/project"
 )
@@ -30,9 +33,16 @@ type App struct {
 	Getwd    func() (string, error)
 	Runner   command.Runner
 	Git      *git.Client
+	Lima     *lima.Client
+	DataDir  func() (string, error)
 	LookPath platform.LookPath
+	Confirm  func(prompt string) (bool, error)
 	Logger   *slog.Logger
 	Verbose  bool
+
+	// Provision is installed by the toolchain layer. It runs after the VM is
+	// running and before boxt reports the environment ready.
+	Provision func(ctx context.Context, p *project.Project) error
 }
 
 // New returns the production application wiring.
@@ -45,10 +55,30 @@ func New() *App {
 		Getwd:    os.Getwd,
 		Runner:   runner,
 		Git:      git.New(runner),
+		Lima:     lima.New(runner),
+		DataDir:  platform.DataDir,
 		LookPath: exec.LookPath,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+	app.Confirm = defaultConfirm(app.In, app.Out)
 	return app
+}
+
+func defaultConfirm(in io.Reader, out io.Writer) func(string) (bool, error) {
+	return func(prompt string) (bool, error) {
+		if f, ok := in.(*os.File); ok {
+			info, err := f.Stat()
+			if err == nil && info.Mode()&os.ModeCharDevice == 0 {
+				return false, errors.New("confirmation requires a terminal; re-run with --yes to confirm non-interactively")
+			}
+		}
+		fmt.Fprint(out, prompt)
+		line, err := bufio.NewReader(in).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return false, fmt.Errorf("read confirmation: %w", err)
+		}
+		return strings.EqualFold(strings.TrimSpace(line), "yes"), nil
+	}
 }
 
 // NewRoot builds the Cobra command tree.
@@ -79,6 +109,10 @@ func NewRoot(app *App) *cobra.Command {
 	}
 
 	root.AddCommand(newInitCmd(app))
+	root.AddCommand(newUpCmd(app))
+	root.AddCommand(newDownCmd(app))
+	root.AddCommand(newStatusCmd(app))
+	root.AddCommand(newDestroyCmd(app))
 	root.AddCommand(newVersionCmd(app))
 	return root
 }

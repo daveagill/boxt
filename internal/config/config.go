@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/boxt/boxt/internal/fsutil"
 )
 
 const (
@@ -200,7 +202,7 @@ func Create(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create project directory: %w", err)
 	}
-	return writeFileAtomic(path, []byte(DefaultYAML), 0o644)
+	return fsutil.WriteFileAtomic(path, []byte(DefaultYAML), 0o644)
 }
 
 // Marshal serializes a configuration with two-space indentation.
