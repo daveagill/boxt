@@ -19,6 +19,9 @@ func TestEndToEndWithFakeLimactl(t *testing.T) {
 		t.Skip("git not installed")
 	}
 	base := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolved
+	}
 	projectDir := filepath.Join(base, "project")
 	fakeDir := filepath.Join(base, "bin")
 	stateDir := filepath.Join(base, "state")

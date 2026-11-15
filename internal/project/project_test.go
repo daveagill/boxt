@@ -11,14 +11,23 @@ import (
 	"github.com/daveagill/boxt/internal/config"
 )
 
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", path, err)
+	}
+	return filepath.Clean(resolved)
+}
+
 func TestInitAndLookup(t *testing.T) {
 	dir := t.TempDir()
 	p, err := Init(dir)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if p.Root != dir {
-		t.Fatalf("root = %q, want %q", p.Root, dir)
+	if p.Root != canonicalTestPath(t, dir) {
+		t.Fatalf("root = %q, want %q", p.Root, canonicalTestPath(t, dir))
 	}
 	if _, err := os.Stat(filepath.Join(dir, ConfigRelPath)); err != nil {
 		t.Fatalf("config not created: %v", err)
@@ -68,8 +77,8 @@ func TestInitCreatesMissingPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if p.Root != dir {
-		t.Fatalf("root = %q, want %q", p.Root, dir)
+	if p.Root != canonicalTestPath(t, dir) {
+		t.Fatalf("root = %q, want %q", p.Root, canonicalTestPath(t, dir))
 	}
 }
 
@@ -100,15 +109,15 @@ func TestLookupNestedProjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Root != inner {
-		t.Fatalf("Lookup returned %q, want inner project %q", got.Root, inner)
+	if got.Root != canonicalTestPath(t, inner) {
+		t.Fatalf("Lookup returned %q, want inner project %q", got.Root, canonicalTestPath(t, inner))
 	}
 	got, err = Lookup(filepath.Join(inner, "src"))
 	if err != nil {
 		t.Fatalf("Lookup missing nested path: %v", err)
 	}
-	if got.Root != inner {
-		t.Fatalf("Lookup returned %q, want inner project %q", got.Root, inner)
+	if got.Root != canonicalTestPath(t, inner) {
+		t.Fatalf("Lookup returned %q, want inner project %q", got.Root, canonicalTestPath(t, inner))
 	}
 }
 
@@ -183,8 +192,8 @@ func TestLookupAcceptsFilePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Root != dir {
-		t.Fatalf("root = %q, want %q", got.Root, dir)
+	if got.Root != canonicalTestPath(t, dir) {
+		t.Fatalf("root = %q, want %q", got.Root, canonicalTestPath(t, dir))
 	}
 }
 

@@ -79,6 +79,9 @@ func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 		t.Fatal(err)
 	}
 	dataDir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dataDir); err == nil {
+		dataDir = resolved
+	}
 	app, outBuf, errBuf := testApp(t, dir)
 	app.DataDir = func() (string, error) { return dataDir, nil }
 	fr := &fakeLimaRunner{vmName: p.VMName()}
