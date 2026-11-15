@@ -2,7 +2,6 @@ package platform
 
 import (
 	"errors"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -108,13 +107,13 @@ func TestVirtualizationWarning(t *testing.T) {
 	if got := VirtualizationWarning("darwin"); got != "" {
 		t.Fatalf("macOS warning = %q", got)
 	}
-	_, err := os.Stat("/dev/kvm")
 	got := VirtualizationWarning("linux")
-	if err != nil && got == "" {
-		t.Fatal("expected warning without /dev/kvm")
-	}
-	if err == nil && got != "" {
-		t.Fatalf("unexpected warning with /dev/kvm: %q", got)
+	if kvmAvailable() {
+		if got != "" {
+			t.Fatalf("unexpected warning with usable /dev/kvm: %q", got)
+		}
+	} else if got == "" {
+		t.Fatal("expected warning without usable /dev/kvm")
 	}
 }
 
