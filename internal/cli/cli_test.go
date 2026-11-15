@@ -1,0 +1,189 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/boxt/boxt/internal/command"
+	"github.com/boxt/boxt/internal/git"
+	"github.com/boxt/boxt/internal/project"
+)
+
+func testApp(t *testing.T, cwd string) (*App, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+	runner := command.ExecRunner{}
+	app := &App{
+		In:       strings.NewReader(""),
+		Out:      out,
+		Err:      errOut,
+		Getwd:    func() (string, error) { return cwd, nil },
+		Runner:   runner,
+		Git:      git.New(runner),
+		LookPath: func(name string) (string, error) { return "/usr/bin/" + name, nil },
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	return app, out, errOut
+}
+
+func TestInitCommand(t *testing.T) {
+	dir := t.TempDir()
+	app, out, errOut := testApp(t, dir)
+	code := Run(context.Background(), app, []string{"init"})
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Initialized boxt project") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, project.ConfigRelPath)); err != nil {
+		t.Fatalf("config not created: %v", err)
+	}
+	if !strings.Contains(out.String(), "not a Git repository") {
+		t.Fatalf("expected non-Git note, got: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "boxt up") {
+		t.Fatalf("expected next-step hint, got: %s", out.String())
+	}
+}
+
+func TestInitCommandExplicitPath(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "target")
+	app, _, errOut := testApp(t, base)
+	code := Run(context.Background(), app, []string{"init", target})
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(target, project.ConfigRelPath)); err != nil {
+		t.Fatalf("config not created: %v", err)
+	}
+}
+
+func TestInitCommandDoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	app, _, _ := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init"}); code != 0 {
+		t.Fatalf("first init failed")
+	}
+	cfgPath := filepath.Join(dir, project.ConfigRelPath)
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app2, _, errOut2 := testApp(t, dir)
+	if code := Run(context.Background(), app2, []string{"init"}); code != 1 {
+		t.Fatalf("second init exit = %d, want 1", code)
+	}
+	if !strings.Contains(errOut2.String(), "already initialized") {
+		t.Fatalf("unexpected error: %s", errOut2.String())
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("configuration was overwritten")
+	}
+}
+
+func TestInitCommandGitRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	if _, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", dir, "init", "-q"}}); err != nil {
+		t.Fatal(err)
+	}
+	app, out, errOut := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "not a Git repository") {
+		t.Fatalf("incorrect non-Git note: %s", out.String())
+	}
+}
+
+func TestInitCommandGitMissing(t *testing.T) {
+	dir := t.TempDir()
+	app, out, _ := testApp(t, dir)
+	app.LookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	if code := Run(context.Background(), app, []string{"init"}); code != 0 {
+		t.Fatalf("init with missing Git should still succeed")
+	}
+	if !strings.Contains(out.String(), "Git was not found") {
+		t.Fatalf("expected Git note, got: %s", out.String())
+	}
+}
+
+func TestInitCommandTooManyArgs(t *testing.T) {
+	app, _, errOut := testApp(t, t.TempDir())
+	if code := Run(context.Background(), app, []string{"init", "a", "b"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(errOut.String(), "accepts at most 1 arg") {
+		t.Fatalf("unexpected error: %s", errOut.String())
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	app, out, _ := testApp(t, t.TempDir())
+	if code := Run(context.Background(), app, []string{"version"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "boxt dev") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestHelp(t *testing.T) {
+	app, out, _ := testApp(t, t.TempDir())
+	if code := Run(context.Background(), app, []string{"--help"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	for _, want := range []string{"init", "version", "persistent Linux"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("help missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestUnknownCommand(t *testing.T) {
+	app, _, errOut := testApp(t, t.TempDir())
+	if code := Run(context.Background(), app, []string{"nope"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(errOut.String(), "unknown command") {
+		t.Fatalf("unexpected error: %s", errOut.String())
+	}
+}
+
+func TestPrintErrorNotInitialized(t *testing.T) {
+	var b bytes.Buffer
+	PrintError(&b, &project.ErrNotInitialized{Start: "/tmp/x"})
+	want := "Project not initialized.\n\nRun `boxt init` to initialize this directory.\n"
+	if b.String() != want {
+		t.Fatalf("got %q, want %q", b.String(), want)
+	}
+}
+
+func TestPrintErrorHint(t *testing.T) {
+	var b bytes.Buffer
+	PrintError(&b, &hintedError{})
+	if !strings.Contains(b.String(), "Error: boom") || !strings.Contains(b.String(), "do this") {
+		t.Fatalf("unexpected output: %s", b.String())
+	}
+}
+
+type hintedError struct{}
+
+func (hintedError) Error() string { return "boom" }
+func (hintedError) Hint() string  { return "do this" }

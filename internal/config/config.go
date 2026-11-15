@@ -1,0 +1,218 @@
+// Package config implements loading, validating and atomically editing the
+// project configuration stored in .boxt/config.yaml.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	// CurrentVersion is the only configuration version supported by this MVP.
+	CurrentVersion = 1
+	// DefaultImage is the only guest image supported by the MVP.
+	DefaultImage = "ubuntu-24.04"
+
+	DefaultCPUs   = 4
+	DefaultMemory = "8GiB"
+)
+
+// ErrConfigExists is returned when initialization would overwrite a project.
+var ErrConfigExists = errors.New("project configuration already exists")
+
+// Config is the root of .boxt/config.yaml.
+type Config struct {
+	Version int               `yaml:"version"`
+	VM      VMConfig          `yaml:"vm"`
+	Tools   map[string]string `yaml:"tools,omitempty"`
+	Run     RunConfig         `yaml:"run"`
+}
+
+// VMConfig describes the persistent project VM.
+type VMConfig struct {
+	Image  string        `yaml:"image"`
+	CPUs   int           `yaml:"cpus"`
+	Memory string        `yaml:"memory"`
+	Ports  []PortForward `yaml:"ports,omitempty"`
+}
+
+// PortForward requests a controlled guest-to-host port forward. It is
+// default-off; boxt never exposes a guest service unless it is listed here.
+type PortForward struct {
+	Guest  int    `yaml:"guest"`
+	Host   int    `yaml:"host"`
+	HostIP string `yaml:"host_ip,omitempty"`
+}
+
+// RunConfig contains the default target and all named targets.
+type RunConfig struct {
+	Default string               `yaml:"default,omitempty"`
+	Targets map[string]RunTarget `yaml:"targets,omitempty"`
+}
+
+// RunTarget is a named executable and argument list executed in the guest.
+type RunTarget struct {
+	Command     []string `yaml:"command"`
+	Interactive bool     `yaml:"interactive,omitempty"`
+}
+
+// Default returns a fully populated default configuration.
+func Default() *Config {
+	return &Config{
+		Version: CurrentVersion,
+		VM: VMConfig{
+			Image:  DefaultImage,
+			CPUs:   DefaultCPUs,
+			Memory: DefaultMemory,
+		},
+		Tools: map[string]string{},
+		Run: RunConfig{
+			Targets: map[string]RunTarget{},
+		},
+	}
+}
+
+// DefaultYAML is the initial project file written by boxt init. It is kept as
+// a readable template; Load(DefaultYAML) must equal Default().
+const DefaultYAML = `# boxt project configuration.
+# This file is the source of truth for this project's VM, tools and run targets.
+version: 1
+
+vm:
+  image: ubuntu-24.04
+  cpus: 4
+  memory: 8GiB
+
+# Tools are installed into the project VM. Example:
+# tools:
+#   node: "24"
+tools: {}
+
+run:
+  # default: dev
+  targets: {}
+`
+
+// ApplyDefaults fills omitted optional fields with sensible defaults. It is
+// called by Load before validation.
+func (c *Config) ApplyDefaults() {
+	if c.VM.Image == "" {
+		c.VM.Image = DefaultImage
+	}
+	if c.VM.CPUs == 0 {
+		c.VM.CPUs = DefaultCPUs
+	}
+	if c.VM.Memory == "" {
+		c.VM.Memory = DefaultMemory
+	}
+	if c.Tools == nil {
+		c.Tools = map[string]string{}
+	}
+	if c.Run.Targets == nil {
+		c.Run.Targets = map[string]RunTarget{}
+	}
+	for i := range c.VM.Ports {
+		if c.VM.Ports[i].HostIP == "" {
+			c.VM.Ports[i].HostIP = "127.0.0.1"
+		}
+	}
+}
+
+// Load reads and validates a configuration file.
+func Load(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read configuration: %w", err)
+	}
+	cfg, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("load %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// Parse decodes and validates configuration bytes. Unknown fields are
+// rejected so typos never silently change behavior.
+func Parse(data []byte) (*Config, error) {
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	dec.KnownFields(true)
+
+	var cfg Config
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("invalid YAML: %w", err)
+	}
+	var extra yaml.Node
+	switch err := dec.Decode(&extra); {
+	case err == nil:
+		return nil, errors.New("invalid YAML: multiple documents are not supported")
+	case !errors.Is(err, io.EOF):
+		return nil, fmt.Errorf("invalid YAML: %w", err)
+	}
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// ToolNames returns declared tool names in stable order.
+func (c *Config) ToolNames() []string {
+	names := make([]string, 0, len(c.Tools))
+	for name := range c.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TargetNames returns configured target names in stable order.
+func (c *Config) TargetNames() []string {
+	names := make([]string, 0, len(c.Run.Targets))
+	for name := range c.Run.Targets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ResolveTarget looks up a named target. The boolean is false when the target
+// is not configured; callers must never fall back to PATH.
+func (c *Config) ResolveTarget(name string) (RunTarget, bool) {
+	t, ok := c.Run.Targets[name]
+	return t, ok
+}
+
+// Create writes a new default configuration. It never overwrites an existing
+// project configuration.
+func Create(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return ErrConfigExists
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect configuration: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create project directory: %w", err)
+	}
+	return writeFileAtomic(path, []byte(DefaultYAML), 0o644)
+}
+
+// Marshal serializes a configuration with two-space indentation.
+func Marshal(cfg *Config) ([]byte, error) {
+	var b strings.Builder
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2)
+	if err := enc.Encode(cfg); err != nil {
+		return nil, fmt.Errorf("encode configuration: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("encode configuration: %w", err)
+	}
+	return []byte(b.String()), nil
+}
