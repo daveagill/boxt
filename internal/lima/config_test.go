@@ -233,6 +233,48 @@ func TestGeneratedConfigHasNoHomeMountFromLimaTemplate(t *testing.T) {
 	}
 }
 
+func TestGeneratedConfigDisablesDynamicPortForwarding(t *testing.T) {
+	opts := testOptions(t)
+	opts.PortForwarding = config.PortForwardingExplicit
+	data, err := GenerateConfig(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"guestIP: 0.0.0.0", "guestIPMustBeZero: false", "proto: any", "ignore: true"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("ignore-all port rule missing %q:\n%s", want, text)
+		}
+	}
+	opts.Ports = []config.PortForward{{Guest: 3000, Host: 3000}}
+	data, err = GenerateConfig(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "ignore: true") != 1 {
+		t.Fatalf("expected exactly one ignore-all rule:\n%s", data)
+	}
+	if idxExplicit, idxIgnore := strings.Index(string(data), "guestPort: 3000"), strings.Index(string(data), "ignore: true"); idxExplicit < 0 || idxIgnore < 0 || idxExplicit > idxIgnore {
+		t.Fatalf("explicit rule must precede ignore-all:\n%s", data)
+	}
+}
+
+func TestGeneratedConfigAutoPortForwarding(t *testing.T) {
+	opts := testOptions(t)
+	opts.PortForwarding = config.PortForwardingAuto
+	opts.Ports = []config.PortForward{{Guest: 3000, Host: 3000}}
+	data, err := GenerateConfig(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "ignore: true") {
+		t.Fatalf("auto mode unexpectedly ignores dynamic forwarding:\n%s", data)
+	}
+	if !strings.Contains(string(data), "guestPort: 3000") {
+		t.Fatalf("explicit mapping missing in auto mode:\n%s", data)
+	}
+}
+
 func TestPortConflictError(t *testing.T) {
 	err := &PortConflictError{HostIP: "127.0.0.1", Port: 3000, Cause: errors.New("bind failed")}
 	if !strings.Contains(err.Error(), "3000") || !strings.Contains(err.Hint(), "already in use") {

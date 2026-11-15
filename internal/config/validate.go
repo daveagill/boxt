@@ -82,6 +82,11 @@ func (c *Config) Validate() error {
 	if _, err := parseMemory(c.VM.Memory); err != nil {
 		v.add("vm.memory", "%s", err)
 	}
+	switch c.VM.PortForwarding {
+	case PortForwardingAuto, PortForwardingExplicit:
+	default:
+		v.add("vm.port_forwarding", "must be %q or %q", PortForwardingAuto, PortForwardingExplicit)
+	}
 
 	seenHostPorts := map[string]int{}
 	for i, p := range c.VM.Ports {

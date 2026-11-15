@@ -24,6 +24,12 @@ const (
 
 	DefaultCPUs   = 4
 	DefaultMemory = "8GiB"
+
+	// PortForwardingAuto lets Lima forward guest loopback services to host
+	// loopback automatically. PortForwardingExplicit forwards only declared
+	// ports and ignores everything else.
+	PortForwardingAuto     = "auto"
+	PortForwardingExplicit = "explicit"
 )
 
 // ErrConfigExists is returned when initialization would overwrite a project.
@@ -39,10 +45,11 @@ type Config struct {
 
 // VMConfig describes the persistent project VM.
 type VMConfig struct {
-	Image  string        `yaml:"image"`
-	CPUs   int           `yaml:"cpus"`
-	Memory string        `yaml:"memory"`
-	Ports  []PortForward `yaml:"ports,omitempty"`
+	Image          string        `yaml:"image"`
+	CPUs           int           `yaml:"cpus"`
+	Memory         string        `yaml:"memory"`
+	PortForwarding string        `yaml:"port_forwarding,omitempty"`
+	Ports          []PortForward `yaml:"ports,omitempty"`
 }
 
 // PortForward requests a controlled guest-to-host port forward. It is
@@ -70,9 +77,10 @@ func Default() *Config {
 	return &Config{
 		Version: CurrentVersion,
 		VM: VMConfig{
-			Image:  DefaultImage,
-			CPUs:   DefaultCPUs,
-			Memory: DefaultMemory,
+			Image:          DefaultImage,
+			CPUs:           DefaultCPUs,
+			Memory:         DefaultMemory,
+			PortForwarding: PortForwardingAuto,
 		},
 		Tools: map[string]string{},
 		Run: RunConfig{
@@ -91,6 +99,9 @@ vm:
   image: ubuntu-24.04
   cpus: 4
   memory: 8GiB
+  # auto: forward guest loopback services to host loopback (vite, servers)
+  # explicit: forward only the ports listed under ports
+  port_forwarding: auto
 
 # Tools are installed into the project VM. Example:
 # tools:
@@ -113,6 +124,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.VM.Memory == "" {
 		c.VM.Memory = DefaultMemory
+	}
+	if c.VM.PortForwarding == "" {
+		c.VM.PortForwarding = PortForwardingAuto
 	}
 	if c.Tools == nil {
 		c.Tools = map[string]string{}

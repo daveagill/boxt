@@ -131,6 +131,7 @@ func NewRoot(app *App) *cobra.Command {
 	root.AddCommand(newShellCmd(app))
 	root.AddCommand(newToolCmd(app))
 	root.AddCommand(newProvisionCmd(app))
+	root.AddCommand(newWorkspaceCmd(app))
 	root.AddCommand(newVersionCmd(app))
 	return root
 }

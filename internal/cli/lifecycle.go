@@ -90,12 +90,13 @@ func (a *App) startVM(ctx context.Context, p *project.Project, paths projectPath
 		return false, err
 	}
 	generated, err := lima.GenerateConfig(lima.VMOptions{
-		ProjectID:     p.ID,
-		ProjectRoot:   p.Root,
-		WorkspacesDir: paths.WorkspacesDir,
-		CPUs:          p.Config.VM.CPUs,
-		Memory:        p.Config.VM.Memory,
-		Ports:         p.Config.VM.Ports,
+		ProjectID:      p.ID,
+		ProjectRoot:    p.Root,
+		WorkspacesDir:  paths.WorkspacesDir,
+		CPUs:           p.Config.VM.CPUs,
+		Memory:         p.Config.VM.Memory,
+		PortForwarding: p.Config.VM.PortForwarding,
+		Ports:          p.Config.VM.Ports,
 	})
 	if err != nil {
 		return false, err
@@ -253,7 +254,16 @@ func (a *App) status(ctx context.Context) error {
 
 	vmState := "not created"
 	if status.Exists {
-		vmState = strings.ToLower(status.Instance.Status)
+		switch status.Instance.Status {
+		case "Running":
+			vmState = "running"
+		case "Stopped":
+			vmState = "stopped"
+		case "Broken", "Uninitialized", "":
+			vmState = "broken"
+		default:
+			vmState = strings.ToLower(status.Instance.Status)
+		}
 		if status.Instance.VMType != "" {
 			vmState += fmt.Sprintf(" (%s/%s)", status.Instance.VMType, status.Instance.Arch)
 		}
@@ -264,6 +274,7 @@ func (a *App) status(ctx context.Context) error {
 	fmt.Fprintf(a.Out, "VM:                %s (%s)\n", name, vmState)
 	fmt.Fprintf(a.Out, "Guest image:       %s\n", p.Config.VM.Image)
 	fmt.Fprintf(a.Out, "Resources:         %d CPUs, %s memory\n", p.Config.VM.CPUs, p.Config.VM.Memory)
+	fmt.Fprintf(a.Out, "Port forwarding:   %s\n", p.Config.VM.PortForwarding)
 	fmt.Fprintf(a.Out, "Project mount:     %s (host %s)\n", lima.GuestProjectPath, p.Root)
 	fmt.Fprintf(a.Out, "Workspaces mount:  %s (host %s)\n", lima.WorkspacesGuestDir(p.ID), paths.WorkspacesDir)
 

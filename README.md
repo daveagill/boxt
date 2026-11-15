@@ -143,6 +143,34 @@ run:
       interactive: true
 ```
 
+## Workspaces
+
+Named workspaces are independent Git worktrees. They live outside the main
+checkout under the boxt data directory, are mounted into the same VM, and share
+installed tools and caches.
+
+```bash
+boxt workspace create feature-a
+boxt workspace create feature-b --branch experiment/b
+boxt workspace list
+boxt workspace path feature-a
+boxt workspace run feature-a test
+boxt workspace run feature-a -- npm test
+boxt workspace shell feature-a
+boxt workspace remove feature-a
+```
+
+Each workspace gets its own checkout, branch, HEAD and index. The default branch
+name is `boxt/<workspace>`, or pass `--branch` to create or check out a different
+branch. The default workspace is the project root and is always present; it
+cannot be created or removed.
+
+The parent repository never sees external worktrees as untracked directories.
+`boxt workspace remove` refuses to discard uncommitted changes; use `--force` only
+when you deliberately want to discard them. Git branches are always retained.
+Stale worktree metadata is pruned safely. Named workspaces require the project
+root to be the Git repository root.
+
 ## VM lifecycle
 
 ```bash
@@ -169,19 +197,35 @@ socket are never mounted.
 
 ### Port forwarding
 
-Guest services are not exposed by default. Request a forward explicitly:
+`vm.port_forwarding` controls exposure:
 
 ```yaml
 vm:
+  port_forwarding: auto   # default
+```
+
+- `auto` uses Lima's dynamic forwarding: a service started inside the guest on
+  a loopback port is reachable on the host loopback at the same port. This is the
+  convenient mode for Vite, dev servers and coding agents.
+- `explicit` forwards only the ports listed under `vm.ports` and ignores all
+  others.
+
+Explicit mappings work in both modes and can change the host port or bind address:
+
+```yaml
+vm:
+  port_forwarding: explicit
   ports:
     - guest: 3000
-      host: 3000
+      host: 8080
       host_ip: 127.0.0.1   # default
 ```
 
-boxt checks the host port before starting the VM and reports a conflict instead of
-silently choosing another port. Lima networking is convenient, not a hardened
-security boundary; see `plan.md` for the full model.
+boxt checks explicitly requested host ports before starting the VM and reports a
+conflict instead of silently choosing another port. For dynamic forwards Lima
+handles collisions. Binding `host_ip: 0.0.0.0` exposes a service on your network;
+the default loopback binding does not. Lima networking is convenient, not a
+hardened security boundary.
 
 ## Development
 

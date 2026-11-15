@@ -264,3 +264,8 @@ go build ./cmd/boxt
   idempotent per-tool reconciliation, `tool add/list/remove`, `provision`, automatic
   provisioning in `up`, and non-interactive tool PATH via `mise exec` with configs
   and auto-install disabled. Unit tests use a fake guest; integration test gated.
+- **M5 complete** — stable project ID paths, external Git worktree create/list/remove,
+  dirty/force handling, stale metadata pruning, branch retention, default workspace,
+  named workspace `run`/`shell`, host and gated guest integration tests. Lima's
+  implicit port-forward catch-all is now controlled by `vm.port_forwarding`
+  (`auto` default, `explicit` to restrict to declared ports).

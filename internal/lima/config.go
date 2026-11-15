@@ -40,12 +40,13 @@ var projectIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // VMOptions describes the machine boxt should create for a project.
 type VMOptions struct {
-	ProjectID     string
-	ProjectRoot   string
-	WorkspacesDir string
-	CPUs          int
-	Memory        string
-	Ports         []config.PortForward
+	ProjectID      string
+	ProjectRoot    string
+	WorkspacesDir  string
+	CPUs           int
+	Memory         string
+	PortForwarding string
+	Ports          []config.PortForward
 }
 
 type limaImage struct {
@@ -74,9 +75,13 @@ type limaContainerd struct {
 }
 
 type limaPortForward struct {
-	GuestPort int    `yaml:"guestPort"`
-	HostPort  int    `yaml:"hostPort"`
-	HostIP    string `yaml:"hostIP"`
+	GuestPort         int    `yaml:"guestPort,omitempty"`
+	HostPort          int    `yaml:"hostPort,omitempty"`
+	HostIP            string `yaml:"hostIP,omitempty"`
+	GuestIP           string `yaml:"guestIP,omitempty"`
+	GuestIPMustBeZero *bool  `yaml:"guestIPMustBeZero,omitempty"`
+	Proto             string `yaml:"proto,omitempty"`
+	Ignore            bool   `yaml:"ignore,omitempty"`
 }
 
 type limaYAML struct {
@@ -151,6 +156,18 @@ func GenerateConfig(opts VMOptions) ([]byte, error) {
 			GuestPort: p.Guest,
 			HostPort:  p.Host,
 			HostIP:    hostIP,
+		})
+	}
+	// Lima appends an implicit catch-all that forwards every guest localhost
+	// port to host localhost. In explicit mode, add an ignore-all rule before
+	// that fallback so guest services are only exposed when configured.
+	if opts.PortForwarding == config.PortForwardingExplicit {
+		allowAny := false
+		doc.PortForwards = append(doc.PortForwards, limaPortForward{
+			GuestIP:           "0.0.0.0",
+			GuestIPMustBeZero: &allowAny,
+			Proto:             "any",
+			Ignore:            true,
 		})
 	}
 

@@ -27,6 +27,9 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if cfg.VM.Image != DefaultImage || cfg.VM.CPUs != DefaultCPUs || cfg.VM.Memory != DefaultMemory {
 		t.Fatalf("defaults not applied: %#v", cfg.VM)
 	}
+	if cfg.VM.PortForwarding != PortForwardingAuto {
+		t.Fatalf("port forwarding default = %q", cfg.VM.PortForwarding)
+	}
 	if cfg.Tools == nil || cfg.Run.Targets == nil {
 		t.Fatalf("maps should be initialized: %#v", cfg)
 	}
@@ -48,6 +51,7 @@ func TestParseValidationErrors(t *testing.T) {
 		{"too little memory", "version: 1\nvm:\n  memory: 100MiB\n", "vm.memory", "at least 512MiB"},
 		{"bad guest port", "version: 1\nvm:\n  ports:\n    - guest: 0\n      host: 3000\n", "vm.ports[0].guest", "1 and 65535"},
 		{"bad host ip", "version: 1\nvm:\n  ports:\n    - guest: 80\n      host: 8080\n      host_ip: nope\n", "vm.ports[0].host_ip", "invalid IP"},
+		{"bad port forwarding mode", "version: 1\nvm:\n  port_forwarding: sometimes\n", "vm.port_forwarding", "must be"},
 		{"duplicate host binding", "version: 1\nvm:\n  ports:\n    - guest: 80\n      host: 8080\n    - guest: 81\n      host: 8080\n", "vm.ports[1].host", "duplicates"},
 		{"bad tool name", "version: 1\ntools:\n  Node: \"24\"\n", "tools.Node", "invalid tool name"},
 		{"bad tool version", "version: 1\ntools:\n  node: \"24/1\"\n", "tools.node", "invalid version"},

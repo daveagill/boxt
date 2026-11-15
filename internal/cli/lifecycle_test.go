@@ -344,6 +344,7 @@ func TestStatusRunning(t *testing.T) {
 		"ubuntu-24.04",
 		"4 CPUs",
 		"8GiB",
+		"Port forwarding:   auto",
 		"/workspace",
 		"/workspaces/" + f.project.ID,
 		"node 24",
