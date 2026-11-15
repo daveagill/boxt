@@ -11,6 +11,7 @@ import (
 
 	"github.com/daveagill/boxt/internal/command"
 	"github.com/daveagill/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/platform"
 	"github.com/daveagill/boxt/internal/project"
 )
 
@@ -162,7 +163,15 @@ exit 0
 	if code := run("destroy", "--yes"); code != 0 {
 		t.Fatalf("destroy exit %d: %s", code, errOut.String())
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, "boxt", "workspaces", p.ID, "feature-a")); err != nil {
+	actualDataDir, err := platform.DataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspacePath := filepath.Join(actualDataDir, "workspaces", p.ID, "feature-a")
+	if resolved, err := filepath.EvalSymlinks(workspacePath); err == nil {
+		workspacePath = resolved
+	}
+	if _, err := os.Stat(workspacePath); err != nil {
 		t.Fatalf("destroy affected workspace: %v", err)
 	}
 }
