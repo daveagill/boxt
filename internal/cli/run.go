@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/boxt/boxt/internal/config"
-	"github.com/boxt/boxt/internal/executor"
-	"github.com/boxt/boxt/internal/lima"
-	"github.com/boxt/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/executor"
+	"github.com/daveagill/boxt/internal/lima"
+	"github.com/daveagill/boxt/internal/project"
 )
 
 type invocation struct {

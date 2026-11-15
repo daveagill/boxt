@@ -15,12 +15,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/git"
-	"github.com/boxt/boxt/internal/lima"
-	"github.com/boxt/boxt/internal/platform"
-	"github.com/boxt/boxt/internal/project"
-	"github.com/boxt/boxt/internal/toolchain"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/git"
+	"github.com/daveagill/boxt/internal/lima"
+	"github.com/daveagill/boxt/internal/platform"
+	"github.com/daveagill/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/toolchain"
 )
 
 // Version is overridden at build time with -ldflags.

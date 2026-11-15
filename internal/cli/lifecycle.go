@@ -13,11 +13,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/boxt/boxt/internal/config"
-	"github.com/boxt/boxt/internal/lima"
-	"github.com/boxt/boxt/internal/platform"
-	"github.com/boxt/boxt/internal/project"
-	"github.com/boxt/boxt/internal/workspace"
+	"github.com/daveagill/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/lima"
+	"github.com/daveagill/boxt/internal/platform"
+	"github.com/daveagill/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/workspace"
 )
 
 type projectPaths struct {

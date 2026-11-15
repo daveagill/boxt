@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/boxt/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/command"
 )
 
 func requireGit(t *testing.T) {

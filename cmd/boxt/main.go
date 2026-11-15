@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/boxt/boxt/internal/cli"
+	"github.com/daveagill/boxt/internal/cli"
 )
 
 func main() {

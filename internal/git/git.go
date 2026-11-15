@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/boxt/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/command"
 )
 
 // ErrNotRepository means the directory is not inside a Git repository.

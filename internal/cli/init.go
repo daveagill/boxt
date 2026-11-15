@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/boxt/boxt/internal/git"
-	"github.com/boxt/boxt/internal/platform"
-	"github.com/boxt/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/git"
+	"github.com/daveagill/boxt/internal/platform"
+	"github.com/daveagill/boxt/internal/project"
 )
 
 func newInitCmd(app *App) *cobra.Command {

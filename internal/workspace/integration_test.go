@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/git"
-	"github.com/boxt/boxt/internal/lima"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/git"
+	"github.com/daveagill/boxt/internal/lima"
 )
 
 func integrationMemory() string {

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/config"
 )
 
 func testOptions(t *testing.T) VMOptions {

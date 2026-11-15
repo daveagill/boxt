@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxt/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/command"
 )
 
 type fakeRunner struct {

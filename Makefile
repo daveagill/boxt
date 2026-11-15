@@ -2,7 +2,7 @@ BIN := bin/boxt
 PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X github.com/boxt/boxt/internal/cli.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/daveagill/boxt/internal/cli.Version=$(VERSION)
 
 .PHONY: build install test integration vet fmt check clean snapshot release
 

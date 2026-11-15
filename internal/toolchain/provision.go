@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/boxt/boxt/internal/lima"
-	"github.com/boxt/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/lima"
+	"github.com/daveagill/boxt/internal/project"
 )
 
 // ToolResult is one tool's provisioning outcome.

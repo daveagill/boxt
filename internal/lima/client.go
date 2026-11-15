@@ -8,7 +8,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/boxt/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/command"
 )
 
 // Client wraps the supported limactl subcommands.

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/lima"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/lima"
 )
 
 // Request is one guest execution. All commands differ only by working

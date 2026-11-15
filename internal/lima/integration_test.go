@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boxt/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/command"
 )
 
 func integrationClient(t *testing.T) (*Client, string) {

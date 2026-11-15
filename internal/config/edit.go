@@ -9,7 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/boxt/boxt/internal/fsutil"
+	"github.com/daveagill/boxt/internal/fsutil"
 )
 
 // ErrToolNotFound is returned when removing an undeclared tool.

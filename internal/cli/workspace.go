@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/boxt/boxt/internal/project"
-	"github.com/boxt/boxt/internal/workspace"
+	"github.com/daveagill/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/workspace"
 )
 
 func newWorkspaceCmd(app *App) *cobra.Command {

@@ -13,7 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/boxt/boxt/internal/fsutil"
+	"github.com/daveagill/boxt/internal/fsutil"
 )
 
 const (

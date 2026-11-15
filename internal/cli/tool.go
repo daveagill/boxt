@@ -10,10 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/boxt/boxt/internal/config"
-	"github.com/boxt/boxt/internal/platform"
-	"github.com/boxt/boxt/internal/project"
-	"github.com/boxt/boxt/internal/toolchain"
+	"github.com/daveagill/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/platform"
+	"github.com/daveagill/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/toolchain"
 )
 
 // ToolManager is the toolchain seam used by CLI commands and tests.

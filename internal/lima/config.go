@@ -15,8 +15,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/boxt/boxt/internal/config"
-	"github.com/boxt/boxt/internal/fsutil"
+	"github.com/daveagill/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/fsutil"
 )
 
 // ConfigFileName is the generated Lima YAML file name inside the VM directory.

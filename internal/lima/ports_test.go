@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/boxt/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/config"
 )
 
 func TestCheckPortAvailable(t *testing.T) {

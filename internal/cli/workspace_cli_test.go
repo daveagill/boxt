@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/platform"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/platform"
 )
 
 func initGitProject(t *testing.T, dir string) {

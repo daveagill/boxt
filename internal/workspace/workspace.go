@@ -11,10 +11,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/git"
-	"github.com/boxt/boxt/internal/lima"
-	"github.com/boxt/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/git"
+	"github.com/daveagill/boxt/internal/lima"
+	"github.com/daveagill/boxt/internal/project"
 )
 
 // DefaultName is reserved for the implicit project-root workspace.

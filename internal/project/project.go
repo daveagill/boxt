@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/boxt/boxt/internal/config"
-	"github.com/boxt/boxt/internal/fsutil"
+	"github.com/daveagill/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/fsutil"
 )
 
 // ConfigRelPath is the project marker file, relative to the project root.

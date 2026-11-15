@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/lima"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/lima"
 )
 
 type fakeGuest struct {

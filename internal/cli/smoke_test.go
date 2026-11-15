@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/config"
-	"github.com/boxt/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/project"
 )
 
 func TestEndToEndWithFakeLimactl(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/git"
-	"github.com/boxt/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/git"
+	"github.com/daveagill/boxt/internal/project"
 )
 
 func testApp(t *testing.T, cwd string) (*App, *bytes.Buffer, *bytes.Buffer) {

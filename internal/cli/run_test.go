@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxt/boxt/internal/command"
-	"github.com/boxt/boxt/internal/config"
-	"github.com/boxt/boxt/internal/project"
-	"github.com/boxt/boxt/internal/toolchain"
+	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/config"
+	"github.com/daveagill/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/toolchain"
 )
 
 func (f *lifecycleFixture) writeConfig(t *testing.T, body string) {

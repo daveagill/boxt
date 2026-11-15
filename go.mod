@@ -1,4 +1,4 @@
-module github.com/boxt/boxt
+module github.com/daveagill/boxt
 
 go 1.24.0
 
