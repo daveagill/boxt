@@ -286,6 +286,18 @@ func isLinkedWorktree(dir string) bool {
 // Init creates a new project configuration at path. Existing configuration is
 // never overwritten.
 func Init(path string) (*Project, error) {
+	return initProject(path, config.Create)
+}
+
+// InitWithConfig creates a project with a generated configuration. Existing
+// configuration is never overwritten.
+func InitWithConfig(path string, cfg *config.Config, header string) (*Project, error) {
+	return initProject(path, func(cfgPath string) error {
+		return config.CreateWith(cfgPath, cfg, header)
+	})
+}
+
+func initProject(path string, create func(cfgPath string) error) (*Project, error) {
 	if path == "" {
 		var err error
 		path, err = os.Getwd()
@@ -308,7 +320,7 @@ func Init(path string) (*Project, error) {
 		return nil, err
 	}
 	cfgPath := filepath.Join(canonical, filepath.FromSlash(ConfigRelPath))
-	if err := config.Create(cfgPath); err != nil {
+	if err := create(cfgPath); err != nil {
 		if errors.Is(err, config.ErrConfigExists) {
 			return nil, fmt.Errorf("already initialized: %s (existing configuration was not overwritten)", cfgPath)
 		}

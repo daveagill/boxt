@@ -1,22 +1,26 @@
 # boxt
 
-**boxt** is a local-first development environment manager. Each project gets one
-persistent Ubuntu Linux VM, a shared toolchain, and multiple independent Git
-workspaces.
+**boxt** runs coding agents and development commands in a persistent, project-
+scoped Linux sandbox. Each project gets one Ubuntu VM, a shared toolchain, and
+multiple independent Git workspaces.
 
-Project files stay on the host where your editor works. Builds, tests, servers and
-coding agents run in a consistent Linux environment that survives restarts.
+Run agents without giving them your host home directory, host SSH keys or Docker
+socket. Project files stay on the host where your editor works; agents edit
+worktrees that you can commit, review and remove.
 
 ```bash
-cd examples/node-app
+mkdir myapp
+cd myapp
+git init
+
+boxt init --preset opencode
 boxt up
-boxt run dev
-boxt workspace create feature-a
-boxt workspace run feature-a test
+boxt workspace create agent-1
+boxt workspace run agent-1 opencode
 ```
 
-Define your own targets and tools in `.boxt/config.yaml` — see
-[Configuration](#configuration) and the complete [example](#complete-example).
+See [Presets](#presets), [Running commands](#running-commands) and the complete
+[example](#complete-example).
 
 ## Supported hosts
 
@@ -104,6 +108,17 @@ boxt init
 This creates `.boxt/config.yaml` and never overwrites existing configuration.
 `boxt init [path]` works for another directory. Commands work from any directory
 inside the project, including from inside a named workspace.
+
+Use presets to scaffold common environments:
+
+```bash
+boxt init --preset node
+boxt init --preset opencode
+boxt init --preset node --preset opencode
+boxt init --preset node --preset opencode --default-target opencode
+```
+
+Presets are starter configuration only. See [Presets](#presets).
 
 ## VM lifecycle
 
@@ -203,6 +218,57 @@ Configuration is validated with field paths. Unsupported versions and unknown
 fields are rejected. Tool declarations are edited atomically while preserving
 comments and unrelated configuration.
 
+## Presets
+
+Presets are static starter fragments. They write ordinary tools and run targets;
+after `boxt init`, `.boxt/config.yaml` is the only source of truth and boxt does
+not remember which preset was used.
+
+| Preset | Contents |
+|---|---|
+| `minimal` | VM defaults only |
+| `node` | Node 24; `dev` and `test` targets; default `dev` |
+| `python` | Python 3.13; interactive `python` target |
+| `go` | Go 1.24; `build` and `test` targets |
+| `rust` | Rust; `build` and `test` targets |
+| `opencode` | Node 24 + OpenCode; interactive target; default `opencode` |
+| `codex` | Codex CLI; interactive target; default `codex` |
+| `claude` | Claude Code; interactive target; default `claude` |
+
+Presets compose:
+
+```bash
+boxt init --preset node --preset opencode
+```
+
+Rules:
+
+- Repeated `--preset` values are merged in an order-independent way.
+- Tools merge by name; conflicting versions are an error.
+- Targets merge by name; conflicting definitions are an error.
+- Each preset may suggest a default target. Zero or one distinct suggestion sets
+  `run.default`; multiple distinct suggestions leave it unset.
+- When suggestions conflict, `init` prints the choices and leaves no default.
+  Use `--default-target <name>` to choose one.
+- The final configuration is validated before anything is written.
+- Existing configuration is never overwritten.
+
+Examples:
+
+```bash
+boxt init --preset opencode
+# run.default: opencode
+
+boxt init --preset node --preset opencode
+# no default; dev and opencode are both available
+
+boxt init --preset node --preset opencode --default-target opencode
+# run.default: opencode
+```
+
+Use `boxt init --help` to list presets. Shell completion for `--preset` is
+available.
+
 ## Tools
 
 Tools are installed into the persistent VM with mise (an internal detail).
@@ -212,6 +278,7 @@ Installed tools and caches live in the guest home and survive `boxt down` /
 ```bash
 boxt tool add node@24
 boxt tool add python@3.13
+boxt tool add opencode@latest --target --interactive
 boxt tool list
 boxt tool remove node
 boxt provision
@@ -223,8 +290,29 @@ deferred until the next `boxt up` (or the next auto-starting run/shell command).
 A failed installation keeps the declaration and tells you to retry with
 `boxt provision`.
 
+Adding a tool does not automatically create a run target. Use `--target` to add a
+target named after the tool, and `--interactive` to give it a PTY:
+
+```bash
+boxt tool add opencode@latest --target --interactive
+```
+
+That writes both the tool declaration and:
+
+```yaml
+run:
+  targets:
+    opencode:
+      command: ["opencode"]
+      interactive: true
+```
+
+`--interactive` requires `--target`. Existing target definitions are never
+silently overwritten.
+
 `boxt tool remove` removes only the declaration. Installed software stays in the
-VM because other workspaces or run targets may still use it.
+VM because other workspaces or run targets may still use it. boxt warns if a run
+target still references the removed tool.
 
 `boxt provision` is the idempotent repair command: it starts the VM if needed,
 ensures mise and system packages, installs missing declared tools, and corrects
@@ -245,7 +333,8 @@ boxt run                # run the default target
 boxt run test           # run a named target
 boxt run -- npm test    # run an arbitrary command
 boxt shell              # interactive shell in the default workspace
-boxt run codex          # run a configured interactive agent
+boxt run opencode       # run a configured interactive agent
+boxt workspace run agent-1 opencode
 ```
 
 Targets are explicit; boxt never treats an installed executable as a run target.
@@ -265,8 +354,9 @@ will not receive a PTY. Guest exit statuses become boxt's exit status. Commands
 are passed as argument arrays, never assembled from user input into a shell
 string.
 
-Coding agents are ordinary interactive run targets. Nothing agent-specific is
-built into boxt.
+Coding agents are ordinary interactive run targets. Presets such as `opencode`,
+`codex` and `claude` only scaffold their tools and target; there is no separate
+agent execution engine or implicit PATH lookup.
 
 ## Workspaces
 

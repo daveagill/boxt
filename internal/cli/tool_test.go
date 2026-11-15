@@ -287,6 +287,120 @@ func TestToolListBrokenVM(t *testing.T) {
 	}
 }
 
+func TestToolAddWithTarget(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Running"
+	ft := &fakeToolchain{installedVersion: "2.3.0"}
+	f.app.Toolchain = ft
+	if code := f.run(t, "tool", "add", "opencode@latest", "--target", "--interactive"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	cfg := loadConfig(t, f)
+	if cfg.Tools["opencode"] != "latest" {
+		t.Fatalf("tools = %#v", cfg.Tools)
+	}
+	target, ok := cfg.Run.Targets["opencode"]
+	if !ok || !target.Interactive || len(target.Command) != 1 || target.Command[0] != "opencode" {
+		t.Fatalf("target = %#v", cfg.Run.Targets)
+	}
+	if ft.installCalls != 1 || ft.installName != "opencode" {
+		t.Fatalf("install calls = %#v", ft)
+	}
+	for _, want := range []string{"Declared opencode@latest", "Added run target opencode", "Installed opencode@latest"} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, f.out.String())
+		}
+	}
+}
+
+func TestToolAddWithTargetStopped(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Stopped"
+	ft := &fakeToolchain{}
+	f.app.Toolchain = ft
+	if code := f.run(t, "tool", "add", "node@24", "--target"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	cfg := loadConfig(t, f)
+	target, ok := cfg.Run.Targets["node"]
+	if !ok || target.Interactive {
+		t.Fatalf("target = %#v", cfg.Run.Targets)
+	}
+	if ft.installCalls != 0 {
+		t.Fatal("installed while VM was stopped")
+	}
+}
+
+func TestToolAddInteractiveRequiresTarget(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "tool", "add", "node@24", "--interactive"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "--interactive requires --target") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+	if len(loadConfig(t, f).Tools) != 0 {
+		t.Fatal("invalid flags changed configuration")
+	}
+}
+
+func TestToolAddTargetConflictIsAtomic(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, `version: 1
+run:
+  targets:
+    opencode:
+      command: ["something-else"]
+`)
+	ft := &fakeToolchain{}
+	f.app.Toolchain = ft
+	if code := f.run(t, "tool", "add", "opencode@latest", "--target", "--interactive"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), `run target "opencode" already exists`) {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+	cfg := loadConfig(t, f)
+	if _, ok := cfg.Tools["opencode"]; ok {
+		t.Fatal("conflicting target still added the tool")
+	}
+	if got := cfg.Run.Targets["opencode"].Command; len(got) != 1 || got[0] != "something-else" {
+		t.Fatalf("existing target changed: %#v", cfg.Run.Targets)
+	}
+}
+
+func TestToolAddInvalidTargetName(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Stopped"
+	if code := f.run(t, "tool", "add", "foo+bar@1", "--target"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "invalid target name") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+	if _, ok := loadConfig(t, f).Tools["foo+bar"]; ok {
+		t.Fatal("invalid target name still added the tool")
+	}
+}
+
+func TestToolRemoveWarnsAboutReferencingTarget(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, `version: 1
+tools:
+  node: "24"
+run:
+  targets:
+    dev:
+      command: ["node", "server.js"]
+`)
+	if code := f.run(t, "tool", "remove", "node"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), `run target "dev" still references node`) {
+		t.Fatalf("missing target warning: %s", f.out.String())
+	}
+}
+
 func TestProvisionCommand(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.runner.status = "Stopped"

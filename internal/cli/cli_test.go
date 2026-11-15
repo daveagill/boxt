@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/config"
 	"github.com/daveagill/boxt/internal/git"
 	"github.com/daveagill/boxt/internal/project"
 )
@@ -131,6 +132,161 @@ func TestInitCommandTooManyArgs(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "accepts at most 1 arg") {
 		t.Fatalf("unexpected error: %s", errOut.String())
+	}
+}
+
+func TestInitWithAgentPreset(t *testing.T) {
+	dir := t.TempDir()
+	app, out, errOut := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init", "--preset", "opencode"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	cfg, err := config.Load(filepath.Join(dir, project.ConfigRelPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Tools["node"] != "24" || cfg.Tools["opencode"] != "latest" {
+		t.Fatalf("tools = %#v", cfg.Tools)
+	}
+	target, ok := cfg.Run.Targets["opencode"]
+	if !ok || !target.Interactive {
+		t.Fatalf("target = %#v", cfg.Run.Targets)
+	}
+	if cfg.Run.Default != "opencode" {
+		t.Fatalf("default = %q", cfg.Run.Default)
+	}
+	for _, want := range []string{"Presets: opencode", "Default target: opencode"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, project.ConfigRelPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Generated with presets: opencode") {
+		t.Fatalf("preset header missing:\n%s", data)
+	}
+}
+
+func TestInitComposePresetsNoDefault(t *testing.T) {
+	dir := t.TempDir()
+	app, out, errOut := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init", "--preset", "node", "--preset", "opencode"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	cfg, err := config.Load(filepath.Join(dir, project.ConfigRelPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Run.Default != "" {
+		t.Fatalf("default = %q, want empty", cfg.Run.Default)
+	}
+	for _, target := range []string{"dev", "test", "opencode"} {
+		if _, ok := cfg.Run.Targets[target]; !ok {
+			t.Fatalf("missing target %q: %#v", target, cfg.Run.Targets)
+		}
+	}
+	for _, want := range []string{"different default targets", "dev (node)", "opencode (opencode)", "No default run target"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestInitExplicitDefaultTarget(t *testing.T) {
+	dir := t.TempDir()
+	app, out, errOut := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init", "--preset", "node", "--preset", "opencode", "--default-target", "opencode"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	cfg, err := config.Load(filepath.Join(dir, project.ConfigRelPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Run.Default != "opencode" {
+		t.Fatalf("default = %q", cfg.Run.Default)
+	}
+	if strings.Contains(out.String(), "different default targets") {
+		t.Fatalf("unexpected conflict warning:\n%s", out.String())
+	}
+}
+
+func TestInitUnknownPresetWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	app, _, errOut := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init", "--preset", "node", "--preset", "nope"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(errOut.String(), "unknown preset") || !strings.Contains(errOut.String(), "opencode") {
+		t.Fatalf("unexpected error: %s", errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, project.ConfigRelPath)); !os.IsNotExist(err) {
+		t.Fatal("invalid preset created configuration")
+	}
+}
+
+func TestInitInvalidDefaultTargetWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	app, _, errOut := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init", "--preset", "node", "--default-target", "nope"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(errOut.String(), "not defined") || !strings.Contains(errOut.String(), "dev") {
+		t.Fatalf("unexpected error: %s", errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, project.ConfigRelPath)); !os.IsNotExist(err) {
+		t.Fatal("invalid default created configuration")
+	}
+}
+
+func TestInitDefaultTargetWithoutPresetWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	app, _, _ := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init", "--default-target", "dev"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, project.ConfigRelPath)); !os.IsNotExist(err) {
+		t.Fatal("invalid default created configuration")
+	}
+}
+
+func TestInitPresetsDoNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	app, _, _ := testApp(t, dir)
+	if code := Run(context.Background(), app, []string{"init", "--preset", "node"}); code != 0 {
+		t.Fatalf("first init failed")
+	}
+	path := filepath.Join(dir, project.ConfigRelPath)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app2, _, errOut2 := testApp(t, dir)
+	if code := Run(context.Background(), app2, []string{"init", "--preset", "opencode"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(errOut2.String(), "already initialized") {
+		t.Fatalf("unexpected error: %s", errOut2.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("preset init overwrote existing configuration")
+	}
+}
+
+func TestInitHelpShowsPresets(t *testing.T) {
+	app, out, _ := testApp(t, t.TempDir())
+	if code := Run(context.Background(), app, []string{"init", "--help"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	for _, want := range []string{"opencode", "codex", "node", "--default-target"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("help missing %q:\n%s", want, out.String())
+		}
 	}
 }
 

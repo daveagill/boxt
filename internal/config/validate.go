@@ -201,6 +201,9 @@ func parseMemory(s string) (int64, error) {
 // ValidToolName reports whether name is an acceptable boxt tool identifier.
 func ValidToolName(name string) bool { return toolNameRE.MatchString(name) }
 
+// ValidTargetName reports whether name is an acceptable run-target name.
+func ValidTargetName(name string) bool { return targetNameRE.MatchString(name) }
+
 // ValidToolVersion reports whether version is an acceptable version string.
 func ValidToolVersion(version string) bool { return toolVersionRE.MatchString(version) }
 

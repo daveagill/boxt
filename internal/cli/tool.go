@@ -125,17 +125,24 @@ func toolStateLabel(s toolchain.ToolStatus, limaAvailable bool, vmState string) 
 }
 
 func newToolAddCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	var addTarget, interactive bool
+	cmd := &cobra.Command{
 		Use:   "add name@version",
 		Short: "Declare a tool and install it when the VM is running",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.toolAdd(cmd.Context(), args[0])
+			return app.toolAdd(cmd.Context(), args[0], addTarget, interactive)
 		},
 	}
+	cmd.Flags().BoolVar(&addTarget, "target", false, "also add the tool as a run target")
+	cmd.Flags().BoolVar(&interactive, "interactive", false, "make the added target interactive (requires --target)")
+	return cmd
 }
 
-func (a *App) toolAdd(ctx context.Context, spec string) error {
+func (a *App) toolAdd(ctx context.Context, spec string, addTarget, interactive bool) error {
+	if interactive && !addTarget {
+		return errors.New("--interactive requires --target")
+	}
 	name, version, err := config.ParseToolSpec(spec)
 	if err != nil {
 		return err
@@ -145,10 +152,19 @@ func (a *App) toolAdd(ctx context.Context, spec string) error {
 		return err
 	}
 	previous, existed := p.Config.Tools[name]
-	if err := config.AddTool(p.ConfigPath, name, version); err != nil {
+	targetExisted := false
+	if addTarget {
+		_, targetExisted = p.Config.Run.Targets[name]
+	}
+	if addTarget {
+		target := config.RunTarget{Command: []string{name}, Interactive: interactive}
+		if err := config.AddToolTarget(p.ConfigPath, name, version, name, target); err != nil {
+			return err
+		}
+	} else if err := config.AddTool(p.ConfigPath, name, version); err != nil {
 		return err
 	}
-	// Reload so subsequent operations use the persisted declaration.
+	// Reload so subsequent operations use the persisted declarations.
 	p, err = project.Open(p.Root)
 	if err != nil {
 		return fmt.Errorf("declaration was saved, but reloading configuration failed: %w", err)
@@ -159,6 +175,13 @@ func (a *App) toolAdd(ctx context.Context, spec string) error {
 		fmt.Fprintf(a.Out, "Tool %s@%s is already declared.\n", name, version)
 	} else {
 		fmt.Fprintf(a.Out, "Declared %s@%s.\n", name, version)
+	}
+	if addTarget {
+		if targetExisted {
+			fmt.Fprintf(a.Out, "Run target %s is already present.\n", name)
+		} else {
+			fmt.Fprintf(a.Out, "Added run target %s.\n", name)
+		}
 	}
 
 	lookPath := a.LookPath
@@ -240,5 +263,11 @@ func (a *App) toolRemove(name string) error {
 		return err
 	}
 	fmt.Fprintf(a.Out, "Removed declaration for %s. Installed software remains in the VM.\n", name)
+	for _, targetName := range p.Config.TargetNames() {
+		target := p.Config.Run.Targets[targetName]
+		if len(target.Command) > 0 && target.Command[0] == name {
+			fmt.Fprintf(a.Out, "Note: run target %q still references %s; edit .boxt/config.yaml if it should be removed.\n", targetName, name)
+		}
+	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"gopkg.in/yaml.v3"
 
@@ -14,6 +15,16 @@ import (
 
 // ErrToolNotFound is returned when removing an undeclared tool.
 var ErrToolNotFound = errors.New("tool is not declared")
+
+// ErrTargetExists is returned when adding a target without replacing an
+// existing, different definition.
+type ErrTargetExists struct {
+	Name string
+}
+
+func (e *ErrTargetExists) Error() string {
+	return fmt.Sprintf("run target %q already exists with a different command", e.Name)
+}
 
 // AddTool adds or updates a tool declaration while preserving unrelated YAML
 // (including comments and keys boxt does not manage). The write is atomic.
@@ -24,16 +35,62 @@ func AddTool(path, name, version string) error {
 	if !ValidToolVersion(version) {
 		return fmt.Errorf("invalid tool version %q", version)
 	}
-	return mutateTools(path, func(m *yaml.Node) error {
-		key, value := findMapEntry(m, name)
-		val := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: version}
+	return mutateConfig(path, func(root *yaml.Node) error {
+		tools, err := getOrCreateMapping(root, "tools")
+		if err != nil {
+			return err
+		}
+		setTool(tools, name, version)
+		return nil
+	})
+}
+
+// AddToolTarget adds or updates a tool declaration and adds a run target in the
+// same atomic configuration write. An existing target with a different
+// definition is an error.
+func AddToolTarget(path, name, version, targetName string, target RunTarget) error {
+	if !ValidToolName(name) {
+		return fmt.Errorf("invalid tool name %q", name)
+	}
+	if !ValidToolVersion(version) {
+		return fmt.Errorf("invalid tool version %q", version)
+	}
+	if !ValidTargetName(targetName) {
+		return fmt.Errorf("invalid target name %q", targetName)
+	}
+	return mutateConfig(path, func(root *yaml.Node) error {
+		tools, err := getOrCreateMapping(root, "tools")
+		if err != nil {
+			return err
+		}
+		setTool(tools, name, version)
+
+		run, err := getOrCreateMapping(root, "run")
+		if err != nil {
+			return err
+		}
+		targets, err := getOrCreateMapping(run, "targets")
+		if err != nil {
+			return err
+		}
+		key, value := findMapEntry(targets, targetName)
 		if key != nil {
-			*value = *val
+			var existing RunTarget
+			if err := value.Decode(&existing); err != nil {
+				return fmt.Errorf("parse run target %q: %w", targetName, err)
+			}
+			if !reflect.DeepEqual(existing, target) {
+				return &ErrTargetExists{Name: targetName}
+			}
 			return nil
 		}
-		m.Content = append(m.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name},
-			val,
+		node, err := runTargetNode(target)
+		if err != nil {
+			return err
+		}
+		targets.Content = append(targets.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: targetName},
+			node,
 		)
 		return nil
 	})
@@ -45,14 +102,18 @@ func RemoveTool(path, name string) error {
 	if !ValidToolName(name) {
 		return fmt.Errorf("invalid tool name %q", name)
 	}
-	return mutateTools(path, func(m *yaml.Node) error {
-		key, _ := findMapEntry(m, name)
+	return mutateConfig(path, func(root *yaml.Node) error {
+		tools, err := getOrCreateMapping(root, "tools")
+		if err != nil {
+			return err
+		}
+		key, _ := findMapEntry(tools, name)
 		if key == nil {
 			return ErrToolNotFound
 		}
-		for i := 0; i < len(m.Content); i += 2 {
-			if m.Content[i] == key {
-				m.Content = append(m.Content[:i], m.Content[i+2:]...)
+		for i := 0; i < len(tools.Content); i += 2 {
+			if tools.Content[i] == key {
+				tools.Content = append(tools.Content[:i], tools.Content[i+2:]...)
 				return nil
 			}
 		}
@@ -60,13 +121,13 @@ func RemoveTool(path, name string) error {
 	})
 }
 
-func mutateTools(path string, mutate func(*yaml.Node) error) error {
+func mutateConfig(path string, mutate func(root *yaml.Node) error) error {
 	target, err := resolveConfigPath(path)
 	if err != nil {
 		return err
 	}
 	return fsutil.WithLock(target, func() error {
-		return mutateToolsLocked(target, mutate)
+		return mutateConfigLocked(target, mutate)
 	})
 }
 
@@ -85,7 +146,7 @@ func resolveConfigPath(path string) (string, error) {
 	return resolved, nil
 }
 
-func mutateToolsLocked(path string, mutate func(*yaml.Node) error) error {
+func mutateConfigLocked(path string, mutate func(root *yaml.Node) error) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("inspect configuration: %w", err)
@@ -102,22 +163,7 @@ func mutateToolsLocked(path string, mutate func(*yaml.Node) error) error {
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return errors.New("parse configuration: expected a YAML mapping at the document root")
 	}
-	root := doc.Content[0]
-
-	toolsKey, toolsValue := findMapEntry(root, "tools")
-	if toolsKey == nil {
-		toolsKey = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "tools"}
-		toolsValue = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		root.Content = append(root.Content, toolsKey, toolsValue)
-	} else if toolsValue.Kind == yaml.ScalarNode && toolsValue.Tag == "!!null" {
-		toolsValue.Kind = yaml.MappingNode
-		toolsValue.Tag = "!!map"
-		toolsValue.Value = ""
-	} else if toolsValue.Kind != yaml.MappingNode {
-		return errors.New("configuration field tools must be a mapping")
-	}
-
-	if err := mutate(toolsValue); err != nil {
+	if err := mutate(doc.Content[0]); err != nil {
 		return err
 	}
 
@@ -137,6 +183,54 @@ func mutateToolsLocked(path string, mutate func(*yaml.Node) error) error {
 	}
 
 	return fsutil.WriteFileAtomic(path, buf.Bytes(), info.Mode().Perm())
+}
+
+func getOrCreateMapping(parent *yaml.Node, keyName string) (*yaml.Node, error) {
+	key, value := findMapEntry(parent, keyName)
+	if key == nil {
+		key = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: keyName}
+		value = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		parent.Content = append(parent.Content, key, value)
+		return value, nil
+	}
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		value.Kind = yaml.MappingNode
+		value.Tag = "!!map"
+		value.Value = ""
+		return value, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("configuration field %s must be a mapping", keyName)
+	}
+	return value, nil
+}
+
+func setTool(tools *yaml.Node, name, version string) {
+	key, value := findMapEntry(tools, name)
+	val := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: version}
+	if key != nil {
+		*value = *val
+		return
+	}
+	tools.Content = append(tools.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name},
+		val,
+	)
+}
+
+func runTargetNode(target RunTarget) (*yaml.Node, error) {
+	data, err := yaml.Marshal(&target)
+	if err != nil {
+		return nil, fmt.Errorf("encode run target: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("encode run target: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return nil, errors.New("encode run target: empty document")
+	}
+	return doc.Content[0], nil
 }
 
 func findMapEntry(m *yaml.Node, name string) (key, value *yaml.Node) {

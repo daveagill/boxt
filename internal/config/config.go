@@ -208,10 +208,30 @@ func (c *Config) ResolveTarget(name string) (RunTarget, bool) {
 // Create writes a new default configuration. It never overwrites an existing
 // project configuration.
 func Create(path string) error {
+	return CreateData(path, []byte(DefaultYAML))
+}
+
+// CreateWith validates and writes a generated configuration. It never
+// overwrites an existing project configuration.
+func CreateWith(path string, cfg *Config, header string) error {
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	data, err := MarshalWithHeader(cfg, header)
+	if err != nil {
+		return err
+	}
+	return CreateData(path, data)
+}
+
+// CreateData atomically creates a configuration file and fails if it already
+// exists.
+func CreateData(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create project directory: %w", err)
 	}
-	if err := fsutil.WriteFileExclusive(path, []byte(DefaultYAML), 0o644); err != nil {
+	if err := fsutil.WriteFileExclusive(path, data, 0o644); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return ErrConfigExists
 		}
@@ -232,4 +252,17 @@ func Marshal(cfg *Config) ([]byte, error) {
 		return nil, fmt.Errorf("encode configuration: %w", err)
 	}
 	return []byte(b.String()), nil
+}
+
+// MarshalWithHeader serializes a configuration with an optional comment header.
+func MarshalWithHeader(cfg *Config, header string) ([]byte, error) {
+	body, err := Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return body, nil
+	}
+	return []byte(header + "\n\n" + string(body)), nil
 }

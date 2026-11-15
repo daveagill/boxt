@@ -4,9 +4,10 @@ Engineering guide for coding agents working on **boxt**.
 
 boxt is a local-first development environment manager: one persistent Ubuntu
 24.04 VM per project, a shared mise-managed toolchain, and multiple independent
-Git worktrees ("workspaces") mounted into that VM. The user-facing documentation
-is in `README.md`; this file records invariants and workflows that must not be
-broken accidentally.
+Git worktrees ("workspaces") mounted into that VM. Agent sandboxing is the
+headline use case; the generic run-target/workspace model is the foundation.
+The user-facing documentation is in `README.md`; this file records invariants
+and workflows that must not be broken accidentally.
 
 ## Quick commands
 
@@ -30,8 +31,9 @@ goreleaser release --snapshot --clean
 cmd/boxt/                 process entry point
 internal/command/         subprocess seam, exit codes, cancellation/process groups
 internal/config/          schema, validation, atomic/locked YAML edits
-internal/project/         discovery, canonical identity, worktree metadata
-internal/platform/        host OS/arch, data dirs, prerequisites
+internal/project/          discovery, canonical identity, worktree metadata
+internal/preset/           static composable starter configurations for init
+internal/platform/         host OS/arch, data dirs, prerequisites
 internal/lima/            limactl adapter, generated Lima YAML, lifecycle, ports
 internal/executor/        single execution engine (run/shell/workspaces)
 internal/workspace/       Git worktree create/list/remove, names/paths
@@ -73,6 +75,12 @@ examples/node-app/        complete runnable example
   whose configuration differs; instruct the user to `boxt destroy` then
   `boxt up`. Do not silently update the fingerprint.
 - Tool/run-target changes do not require VM recreation.
+- Presets are static one-shot starter fragments for `boxt init`. They write
+  ordinary config and are never stored as metadata. Composition is
+  order-independent: tools/targets merge by name, conflicts are errors, and
+  distinct default-target suggestions leave `run.default` unset unless
+  `--default-target` is given. Do not turn presets into a runtime concept or a
+  remote/plugin catalog.
 
 ### Lima
 
@@ -118,7 +126,10 @@ examples/node-app/        complete runnable example
   unzip); use sudo only for provisioning/system administration.
 - `tool add`: update config first, install immediately when running, defer when
   stopped/missing, keep the declaration on failure and point at `boxt provision`.
+  `--target` adds a run target named after the tool; `--interactive` requires
+  `--target`. Never silently overwrite a different target definition.
 - `tool remove`: remove only the declaration; never uninstall shared software.
+  Warn if a run target still references the tool.
 - Reconciliation must skip satisfied tools and be safe to run repeatedly.
 
 ### Workspaces

@@ -347,3 +347,144 @@ func TestConcurrentAddTool(t *testing.T) {
 		t.Fatalf("tools = %d, want %d: %#v", len(cfg.Tools), n, cfg.Tools)
 	}
 }
+
+func TestAddToolTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Create(path); err != nil {
+		t.Fatal(err)
+	}
+	target := RunTarget{Command: []string{"opencode"}, Interactive: true}
+	if err := AddToolTarget(path, "opencode", "latest", "opencode", target); err != nil {
+		t.Fatalf("AddToolTarget: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Tools["opencode"] != "latest" {
+		t.Fatalf("tools = %#v", cfg.Tools)
+	}
+	got, ok := cfg.Run.Targets["opencode"]
+	if !ok || !reflect.DeepEqual(got, target) {
+		t.Fatalf("target = %#v", cfg.Run.Targets)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "# boxt project configuration.") || !strings.Contains(string(data), "# Tools are installed") {
+		t.Fatalf("comments were not preserved:\n%s", data)
+	}
+}
+
+func TestAddToolTargetConflictIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Create(path); err != nil {
+		t.Fatal(err)
+	}
+	existing := RunTarget{Command: []string{"npm", "test"}}
+	if err := AddToolTarget(path, "node", "24", "test", existing); err != nil {
+		t.Fatal(err)
+	}
+	err := AddToolTarget(path, "python", "3.13", "test", RunTarget{Command: []string{"pytest"}})
+	var exists *ErrTargetExists
+	if !errors.As(err, &exists) {
+		t.Fatalf("expected ErrTargetExists, got %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Tools["python"]; ok {
+		t.Fatalf("conflicting target still added the tool: %#v", cfg.Tools)
+	}
+	if got := cfg.Run.Targets["test"]; !reflect.DeepEqual(got, existing) {
+		t.Fatalf("existing target changed: %#v", got)
+	}
+}
+
+func TestAddToolTargetIdempotentAndUpdatesTool(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Create(path); err != nil {
+		t.Fatal(err)
+	}
+	target := RunTarget{Command: []string{"node"}, Interactive: true}
+	if err := AddToolTarget(path, "node", "22", "node", target); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddToolTarget(path, "node", "24", "node", target); err != nil {
+		t.Fatalf("idempotent target update: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Tools["node"] != "24" {
+		t.Fatalf("tool version = %q", cfg.Tools["node"])
+	}
+	if len(cfg.Run.Targets) != 1 {
+		t.Fatalf("targets = %#v", cfg.Run.Targets)
+	}
+}
+
+func TestAddToolTargetNullRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nrun: null\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddToolTarget(path, "node", "24", "node", RunTarget{Command: []string{"node"}}); err != nil {
+		t.Fatalf("AddToolTarget with null run: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Run.Targets["node"]; !ok {
+		t.Fatalf("target missing: %#v", cfg.Run.Targets)
+	}
+}
+
+func TestAddToolTargetInvalidName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Create(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddToolTarget(path, "node", "24", "bad target", RunTarget{Command: []string{"node"}}); err == nil {
+		t.Fatal("invalid target name accepted")
+	}
+}
+
+func TestCreateWithHeaderAndNoOverwrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := Default()
+	cfg.Tools["node"] = "24"
+	if err := CreateWith(path, cfg, "# generated header"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "# generated header\n\n") {
+		t.Fatalf("header missing:\n%s", data)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Tools["node"] != "24" {
+		t.Fatalf("tools = %#v", loaded.Tools)
+	}
+	cfg2 := Default()
+	cfg2.Tools["python"] = "3.13"
+	if err := CreateWith(path, cfg2, ""); !errors.Is(err, ErrConfigExists) {
+		t.Fatalf("expected ErrConfigExists, got %v", err)
+	}
+	loaded, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded.Tools["python"]; ok {
+		t.Fatal("existing config was overwritten")
+	}
+}

@@ -122,8 +122,8 @@ func defaultConfirm(in io.Reader, out io.Writer) func(string) (bool, error) {
 func NewRoot(app *App) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "boxt [target] [-- command [args...]]",
-		Short:         "Persistent Linux development environments for projects",
-		Long:          "boxt gives each project a persistent Linux VM, shared toolchain and independent Git workspaces.",
+		Short:         "Sandboxed Linux VMs for coding agents and development",
+		Long:          "boxt gives each project a persistent Linux VM for coding agents and development, with a shared toolchain and independent Git workspaces.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
@@ -135,7 +135,6 @@ func NewRoot(app *App) *cobra.Command {
 	root.SetOut(app.Out)
 	root.SetErr(app.Err)
 	root.PersistentFlags().BoolVarP(&app.Verbose, "verbose", "v", false, "enable debug logging")
-	root.CompletionOptions.DisableDefaultCmd = true
 
 	root.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		level := slog.LevelInfo
