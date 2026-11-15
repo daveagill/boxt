@@ -248,7 +248,7 @@ not remember which preset was used.
 | `python` | Latest Python; interactive `python` target |
 | `go` | Latest Go; `build` and `test` targets |
 | `rust` | Rust stable; `build` and `test` targets |
-| `opencode` | Node LTS + OpenCode; interactive target; default `opencode` |
+| `opencode` | OpenCode; interactive target; default `opencode` |
 | `codex` | Codex CLI; interactive target; default `codex` |
 | `claude` | Claude Code; interactive target; default `claude` |
 
@@ -290,9 +290,6 @@ Use `boxt init --help` to list presets. Shell completion for `--preset` is
 available. Presets use floating runtime versions (`node: lts`, `python: latest`,
 `go: latest`, `rust: stable`) so `boxt provision` refreshes them; pin exact
 versions in `.boxt/config.yaml` when reproducibility matters.
-
-OpenCode currently installs through mise's npm backend, which requires Node.
-The `opencode` preset therefore includes Node LTS.
 
 ## Tools
 
@@ -344,11 +341,10 @@ ensures mise and system packages, installs missing declared tools, and corrects
 versions. Run targets and shells use mise's execution environment directly, so
 tools are on `PATH` without relying on `.bashrc` or `.profile`.
 
-Some tools, such as npm-backed CLIs, also need Node.js declared. Unsupported mise
-tool identifiers fail during provisioning with mise's error. The pinned mise
-installer is downloaded from the official `https://mise.run` endpoint into a
-private temporary file and installed as the guest user; an existing newer mise
-installation is accepted.
+Unsupported mise tool identifiers fail during provisioning with mise's error. The
+pinned mise installer is downloaded from the official `https://mise.run` endpoint
+into a private temporary file and installed as the guest user; an existing newer
+mise installation is accepted.
 
 ## Running commands
 

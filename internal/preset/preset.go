@@ -79,7 +79,7 @@ var builtins = []Preset{
 	{
 		Name:          "opencode",
 		Category:      CategoryAgent,
-		Summary:       "OpenCode with Node LTS, interactive target",
+		Summary:       "OpenCode CLI, interactive target",
 		Tools:         map[string]string{"node": "lts", "opencode": "latest"},
 		Targets:       map[string]config.RunTarget{"opencode": {Command: []string{"opencode"}, Interactive: true}},
 		DefaultTarget: "opencode",
