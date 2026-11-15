@@ -34,7 +34,7 @@ func newRunCmd(app *App) *cobra.Command {
 			return app.run(cmd.Context(), args, cmd.ArgsLenAtDash(), noStart)
 		},
 	}
-	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not start a stopped VM automatically")
+	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not create or start the VM automatically")
 	return cmd
 }
 
@@ -47,7 +47,7 @@ func (a *App) run(ctx context.Context, args []string, dash int, noStart bool) er
 	if err != nil {
 		return err
 	}
-	return a.execute(ctx, p, "default", lima.GuestProjectPath, inv, !noStart)
+	return a.execute(ctx, p, "default", lima.GuestProjectPath, inv, !noStart && p.Config.VM.AutoStartEnabled())
 }
 
 // execute is the single CLI path that starts the VM when allowed and runs a
@@ -57,13 +57,6 @@ func (a *App) execute(ctx context.Context, p *project.Project, workspace, workDi
 		fmt.Fprintln(a.Err, "Warning: interactive target requested, but stdout is not a terminal; the guest will not receive a PTY.")
 	}
 	if err := a.requireLima(); err != nil {
-		return err
-	}
-	paths, err := a.pathsFor(p)
-	if err != nil {
-		return err
-	}
-	if err := a.checkConfigDrift(p, paths); err != nil {
 		return err
 	}
 	if err := a.ensureVMForExecution(ctx, p, allowStart); err != nil {
@@ -105,7 +98,7 @@ func newShellCmd(app *App) *cobra.Command {
 			return app.shell(cmd.Context(), noStart)
 		},
 	}
-	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not start a stopped VM automatically")
+	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not create or start the VM automatically")
 	return cmd
 }
 
@@ -114,7 +107,7 @@ func (a *App) shell(ctx context.Context, noStart bool) error {
 	if err != nil {
 		return err
 	}
-	return a.execute(ctx, p, "default", lima.GuestProjectPath, a.shellInvocation(p), !noStart)
+	return a.execute(ctx, p, "default", lima.GuestProjectPath, a.shellInvocation(p), !noStart && p.Config.VM.AutoStartEnabled())
 }
 
 // shellInvocation returns an empty command for a plain guest login shell, or

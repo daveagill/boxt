@@ -74,6 +74,9 @@ examples/node-app/        complete runnable example
   applied at creation. boxt stores a fingerprint and refuses to run against a VM
   whose configuration differs; instruct the user to `boxt destroy` then
   `boxt up`. Do not silently update the fingerprint.
+- `vm.auto_start` controls whether run/shell commands may create/start/provision
+  the VM automatically (default true). `--no-start` overrides it for one command.
+  It is an execution policy, not part of the VM creation fingerprint.
 - Tool/run-target changes do not require VM recreation.
 - Presets are static one-shot starter fragments for `boxt init`. They write
   ordinary config and are never stored as metadata. Composition is
@@ -93,7 +96,9 @@ examples/node-app/        complete runnable example
 - `boxt up` is idempotent, starts/creates the VM, reconciles the toolchain, then
   reports ready. Provisioning failures must not claim readiness; leaving the VM
   running for troubleshooting is intentional.
-- Auto-start before run/shell reconciles tools. `--no-start` disables starting.
+- Auto-start before run/shell creates a missing VM and starts/provisions a stopped
+  one. `--no-start` disables it for one command; `vm.auto_start: false` disables
+  it for the project. `boxt up` always performs explicit setup.
 - Do not assume a guest IP address.
 - WSL2 is experimental host support: run the Linux boxt/limactl binaries inside
   WSL, keep projects/data on ext4 (not `/mnt/c`), and use nested virtualization

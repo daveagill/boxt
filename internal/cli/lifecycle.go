@@ -404,6 +404,11 @@ func (a *App) status(ctx context.Context) error {
 	fmt.Fprintf(a.Out, "Guest image:       %s\n", p.Config.VM.Image)
 	fmt.Fprintf(a.Out, "Resources:         %s\n", resources)
 	fmt.Fprintf(a.Out, "Port forwarding:   %s\n", p.Config.VM.PortForwarding)
+	autoStart := "disabled"
+	if p.Config.VM.AutoStartEnabled() {
+		autoStart = "enabled"
+	}
+	fmt.Fprintf(a.Out, "Auto-up:           %s\n", autoStart)
 	if drift {
 		fmt.Fprintf(a.Out, "Config drift:      run `boxt destroy --yes` and `boxt up` to apply changed VM settings\n")
 	}
@@ -448,25 +453,34 @@ func (a *App) status(ctx context.Context) error {
 	return nil
 }
 
-// ensureVMForExecution starts a stopped VM for a run command. A VM that was
-// never created is an error; boxt does not implicitly initialize projects.
+// ensureVMForExecution ensures the VM is running. When allowed, a stopped or
+// missing VM is created/started and provisioned first. A VM that was never
+// created is not created when auto-start is disabled.
 func (a *App) ensureVMForExecution(ctx context.Context, p *project.Project, allowStart bool) error {
 	name := p.VMName()
 	status, err := a.Lima.Inspect(ctx, name)
 	if err != nil {
 		return err
 	}
-	if !status.Exists {
-		return &vmNotCreatedError{Name: name}
+	paths, err := a.pathsFor(p)
+	if err != nil {
+		return err
+	}
+	if status.Exists {
+		if err := a.checkConfigDrift(p, paths); err != nil {
+			return err
+		}
 	}
 	if status.Running {
 		return nil
 	}
 	if !allowStart {
+		if !status.Exists {
+			return &vmNotCreatedError{Name: name}
+		}
 		return &vmStoppedError{Name: name}
 	}
-	fmt.Fprintf(a.Err, "Starting VM %s...\n", name)
-	if err := a.Lima.Start(ctx, name); err != nil {
+	if _, err := a.startVM(ctx, p, paths); err != nil {
 		return err
 	}
 	if a.Provision != nil {
@@ -486,12 +500,12 @@ type vmNotCreatedError struct{ Name string }
 
 func (e *vmNotCreatedError) Error() string { return fmt.Sprintf("VM %s does not exist", e.Name) }
 func (e *vmNotCreatedError) Hint() string {
-	return "Run `boxt up` to create and start the project VM."
+	return "Run `boxt up` to create and start the project VM, or omit --no-start (and ensure vm.auto_start is enabled)."
 }
 
 type vmStoppedError struct{ Name string }
 
 func (e *vmStoppedError) Error() string { return fmt.Sprintf("VM %s is stopped", e.Name) }
 func (e *vmStoppedError) Hint() string {
-	return "Run `boxt up` to start it, or omit --no-start."
+	return "Run `boxt up` to start it, or omit --no-start (and ensure vm.auto_start is enabled)."
 }

@@ -49,6 +49,7 @@ type VMConfig struct {
 	CPUs           int           `yaml:"cpus"`
 	Memory         string        `yaml:"memory"`
 	PortForwarding string        `yaml:"port_forwarding,omitempty"`
+	AutoStart      *bool         `yaml:"auto_start,omitempty"`
 	Ports          []PortForward `yaml:"ports,omitempty"`
 }
 
@@ -81,12 +82,21 @@ func Default() *Config {
 			CPUs:           DefaultCPUs,
 			Memory:         DefaultMemory,
 			PortForwarding: PortForwardingAuto,
+			AutoStart:      boolPtr(true),
 		},
 		Tools: map[string]string{},
 		Run: RunConfig{
 			Targets: map[string]RunTarget{},
 		},
 	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+// AutoStartEnabled reports whether run/shell commands may create or start the
+// VM automatically. Omitting auto_start means enabled.
+func (v VMConfig) AutoStartEnabled() bool {
+	return v.AutoStart == nil || *v.AutoStart
 }
 
 // DefaultYAML is the initial project file written by boxt init. It is kept as
@@ -102,6 +112,8 @@ vm:
   # auto: forward guest loopback services to host loopback (vite, servers)
   # explicit: forward only the ports listed under ports
   port_forwarding: auto
+  # create/start the VM automatically before run and shell commands
+  auto_start: true
 
 # Tools are installed into the project VM. Example:
 # tools:
@@ -127,6 +139,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.VM.PortForwarding == "" {
 		c.VM.PortForwarding = PortForwardingAuto
+	}
+	if c.VM.AutoStart == nil {
+		c.VM.AutoStart = boolPtr(true)
 	}
 	if c.Tools == nil {
 		c.Tools = map[string]string{}

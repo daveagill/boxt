@@ -32,8 +32,28 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if cfg.VM.PortForwarding != PortForwardingAuto {
 		t.Fatalf("port forwarding default = %q", cfg.VM.PortForwarding)
 	}
+	if !cfg.VM.AutoStartEnabled() {
+		t.Fatal("auto_start should default to true")
+	}
 	if cfg.Tools == nil || cfg.Run.Targets == nil {
 		t.Fatalf("maps should be initialized: %#v", cfg)
+	}
+}
+
+func TestParseAutoStartFalse(t *testing.T) {
+	cfg, err := Parse([]byte("version: 1\nvm:\n  auto_start: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VM.AutoStartEnabled() {
+		t.Fatal("auto_start false was ignored")
+	}
+	data, err := Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "auto_start: false") {
+		t.Fatalf("auto_start false not preserved:\n%s", data)
 	}
 }
 

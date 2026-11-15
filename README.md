@@ -14,12 +14,13 @@ cd myapp
 git init
 
 boxt init --preset opencode
-boxt up
 boxt run opencode
 ```
 
-The project root is the default workspace; no extra workspace setup is required.
-To run another agent in parallel in its own checkout:
+The first run creates, starts and provisions the VM automatically; `boxt up`
+does the same explicitly. The project root is the default workspace; no extra
+workspace setup is required. To run another agent in parallel in its own
+checkout:
 
 ```bash
 boxt workspace create agent-2
@@ -149,10 +150,18 @@ terminal and the literal confirmation `yes`, or `--yes` for scripts:
 boxt destroy --yes
 ```
 
-A stopped VM is started automatically and the toolchain is reconciled before
-`run`, `shell`, `workspace run` and `workspace shell`. Pass `--no-start` to
-disable automatic startup. A VM that was never created is an error; boxt does not
-implicitly initialize projects.
+A stopped or missing VM is created/started automatically and the toolchain is
+reconciled before `run`, `shell`, `workspace run` and `workspace shell`. Disable
+this per command with `--no-start`, or for the project with:
+
+```yaml
+vm:
+  auto_start: false
+```
+
+`boxt up` remains the explicit lifecycle/setup command and always creates,
+starts and provisions. boxt never implicitly initializes an uninitialized
+project directory.
 
 The VM name is derived from a canonical project path hash, so symlinks and
 different `cd` paths map to the same VM. Changing `vm.cpus`, `vm.memory`,
@@ -204,6 +213,7 @@ vm:
   cpus: 4
   memory: 8GiB
   port_forwarding: auto
+  auto_start: true
 
 tools:
   node: "24"

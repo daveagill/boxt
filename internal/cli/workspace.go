@@ -206,7 +206,7 @@ func newWorkspaceRunCmd(app *App) *cobra.Command {
 			return app.workspaceRun(cmd.Context(), args, cmd.ArgsLenAtDash(), noStart)
 		},
 	}
-	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not start a stopped VM automatically")
+	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not create or start the VM automatically")
 	return cmd
 }
 
@@ -231,7 +231,7 @@ func (a *App) workspaceRun(ctx context.Context, args []string, dash int, noStart
 	if err != nil {
 		return err
 	}
-	return a.execute(ctx, p, ws.Name, ws.GuestPath, inv, !noStart)
+	return a.execute(ctx, p, ws.Name, ws.GuestPath, inv, !noStart && p.Config.VM.AutoStartEnabled())
 }
 
 func workspaceRunArgs(args []string, dash int) (name string, rest []string, restDash int, err error) {
@@ -260,7 +260,7 @@ func newWorkspaceShellCmd(app *App) *cobra.Command {
 			return app.workspaceShell(cmd.Context(), args[0], noStart)
 		},
 	}
-	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not start a stopped VM automatically")
+	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not create or start the VM automatically")
 	return cmd
 }
 
@@ -277,5 +277,5 @@ func (a *App) workspaceShell(ctx context.Context, name string, noStart bool) err
 	if err != nil {
 		return err
 	}
-	return a.execute(ctx, p, ws.Name, ws.GuestPath, a.shellInvocation(p), !noStart)
+	return a.execute(ctx, p, ws.Name, ws.GuestPath, a.shellInvocation(p), !noStart && p.Config.VM.AutoStartEnabled())
 }

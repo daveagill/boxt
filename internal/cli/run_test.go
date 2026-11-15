@@ -55,6 +55,18 @@ run:
       interactive: true
 `
 
+const runConfigNoAutoStart = `version: 1
+vm:
+  auto_start: false
+run:
+  default: dev
+  targets:
+    dev:
+      command: ["npm", "run", "dev"]
+    test:
+      command: ["npm", "test"]
+`
+
 func TestRunDefaultTarget(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.writeConfig(t, runConfig)
@@ -329,14 +341,89 @@ func TestRunNoStart(t *testing.T) {
 	}
 }
 
-func TestRunMissingVM(t *testing.T) {
+func TestRunMissingVMCreatesVM(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.writeConfig(t, runConfig)
-	if code := f.run(t, "run", "test"); code != 1 {
+	if code := f.run(t, "run", "test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if f.countCommands("start") != 1 {
+		t.Fatalf("expected VM creation, commands: %#v", f.runner.commands)
+	}
+	if f.countCommands("shell") != 1 {
+		t.Fatal("command did not run after VM creation")
+	}
+	if !strings.Contains(f.out.String(), "Creating VM") {
+		t.Fatalf("missing creation message: %s", f.out.String())
+	}
+}
+
+func TestRunMissingVMNoStart(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	if code := f.run(t, "run", "--no-start", "test"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
+	}
+	if f.countCommands("start") != 0 || f.countCommands("shell") != 0 {
+		t.Fatalf("--no-start invoked Lima: %#v", f.runner.commands)
 	}
 	if !strings.Contains(f.errOut.String(), "does not exist") || !strings.Contains(f.errOut.String(), "boxt up") {
 		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestRunAutoStartDisabledInConfig(t *testing.T) {
+	for _, status := range []string{"", "Stopped"} {
+		t.Run(status, func(t *testing.T) {
+			f := newLifecycleFixture(t)
+			f.writeConfig(t, runConfigNoAutoStart)
+			f.runner.status = status
+			if code := f.run(t, "run", "test"); code != 1 {
+				t.Fatalf("exit = %d, want 1", code)
+			}
+			if f.countCommands("start") != 0 || f.countCommands("shell") != 0 {
+				t.Fatalf("auto_start false invoked Lima: %#v", f.runner.commands)
+			}
+			if !strings.Contains(f.errOut.String(), "boxt up") || !strings.Contains(f.errOut.String(), "vm.auto_start") {
+				t.Fatalf("unexpected error: %s", f.errOut.String())
+			}
+		})
+	}
+}
+
+func TestRunAfterDestroyCanCreateWithNewConfig(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("up exit %d: %s", code, f.errOut.String())
+	}
+	if code := f.run(t, "destroy", "--yes"); code != 0 {
+		t.Fatalf("destroy exit %d: %s", code, f.errOut.String())
+	}
+	f.writeConfig(t, `version: 1
+vm:
+  cpus: 2
+run:
+  targets:
+    test:
+      command: ["npm", "test"]
+`)
+	f.runner.commands = nil
+	if code := f.run(t, "run", "test"); code != 0 {
+		t.Fatalf("run exit %d: %s", code, f.errOut.String())
+	}
+	if f.countCommands("start") != 1 {
+		t.Fatalf("VM was not recreated after destroy: %#v", f.runner.commands)
+	}
+}
+
+func TestShellMissingVMCreatesVM(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "shell"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if f.countCommands("start") != 1 || f.countCommands("shell") != 1 {
+		t.Fatalf("shell did not auto-create VM: %#v", f.runner.commands)
 	}
 }
 
