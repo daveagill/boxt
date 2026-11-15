@@ -416,6 +416,9 @@ boxt workspace run feature-a test
 
 ## Development
 
+Engineering invariants and the agent workflow are documented in
+[`AGENTS.md`](AGENTS.md).
+
 ```bash
 make check          # formatting, vet and unit tests
 make test           # unit tests
@@ -457,4 +460,4 @@ exercised in a Linux container without KVM.
 boxt deliberately does not implement Docker/Kubernetes orchestration, remote
 VMs, non-Git workspaces, active workspace selection, a TUI, service management
 for databases, automatic host credential sync, editor integration, or existing
-mise configuration compatibility. See `plan.md` for the full specification.
+mise configuration compatibility.

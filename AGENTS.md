@@ -1,0 +1,211 @@
+# AGENTS.md
+
+Engineering guide for coding agents working on **boxt**.
+
+boxt is a local-first development environment manager: one persistent Ubuntu
+24.04 VM per project, a shared mise-managed toolchain, and multiple independent
+Git worktrees ("workspaces") mounted into that VM. The user-facing documentation
+is in `README.md`; this file records invariants and workflows that must not be
+broken accidentally.
+
+## Quick commands
+
+```bash
+make build                 # ./bin/boxt
+make check                 # gofmt, go vet, go test ./...
+go test ./...
+go test -race ./...
+make integration           # gated real-VM tests; see below
+```
+
+The release build is validated with:
+
+```bash
+goreleaser release --snapshot --clean
+```
+
+## Repository map
+
+```text
+cmd/boxt/                 process entry point
+internal/command/         subprocess seam, exit codes, cancellation/process groups
+internal/config/          schema, validation, atomic/locked YAML edits
+internal/project/         discovery, canonical identity, worktree metadata
+internal/platform/        host OS/arch, data dirs, prerequisites
+internal/lima/            limactl adapter, generated Lima YAML, lifecycle, ports
+internal/executor/        single execution engine (run/shell/workspaces)
+internal/workspace/       Git worktree create/list/remove, names/paths
+internal/toolchain/       mise installation, reconciliation, tool status
+internal/cli/             Cobra commands and wiring; presentation only
+examples/node-app/        complete runnable example
+```
+
+## Non-negotiable invariants
+
+### Identity and storage
+
+- Canonical project root: absolute, symlink-resolved.
+- Project ID: first 16 hex characters of SHA-256(canonical project root).
+- Lima instance name: `boxt-<project-id>`.
+- Host workspace root: `<data-dir>/workspaces/<project-id>`.
+- Guest workspace root: `/workspaces/<project-id>`.
+- Default workspace: project root, mounted at `/workspace`.
+- Data dir: macOS `~/Library/Application Support/boxt`; Linux
+  `${XDG_DATA_HOME:-~/.local/share}/boxt`.
+- Never mount the host home directory, an ancestor of home, `/`, or the Docker
+  socket. The workspace data directory must be outside the project root.
+- Only the project root and its project-scoped workspace root are mounted.
+  Mounts are writable direct host mounts, not file synchronization.
+
+### Configuration
+
+- `.boxt/config.yaml` is the only source of truth for boxt-managed settings.
+- Config version is `1`; unknown fields and unsupported versions are rejected.
+- Tool/config edits must be atomic, locked across processes, and preserve
+  comments, unrelated YAML and symlinked config files.
+- `vm.port_forwarding` supports:
+  - `auto` (default): Lima dynamic forwarding of guest loopback services to host
+    loopback. This is deliberate, requested for Vite/agent workflows.
+  - `explicit`: forward only `vm.ports`; all other ports are ignored.
+- Explicit host ports are checked for conflicts. Guest port 22 is reserved.
+- VM-level settings (CPU, memory, ports, forwarding mode, mounts/data dir) are
+  applied at creation. boxt stores a fingerprint and refuses to run against a VM
+  whose configuration differs; instruct the user to `boxt destroy` then
+  `boxt up`. Do not silently update the fingerprint.
+- Tool/run-target changes do not require VM recreation.
+
+### Lima
+
+- Use supported `limactl` interfaces only; do not depend on internal Lima files or
+  undocumented behavior.
+- Generated config pins Ubuntu 24.04 images with digests, `minimumLimaVersion:
+  2.0.0`, guest user `boxt` with passwordless sudo, containerd disabled and
+  `propagateProxyEnv: false`.
+- Validate generated YAML with `limactl validate` when changing config generation.
+- `boxt up` is idempotent, starts/creates the VM, reconciles the toolchain, then
+  reports ready. Provisioning failures must not claim readiness; leaving the VM
+  running for troubleshooting is intentional.
+- Auto-start before run/shell reconciles tools. `--no-start` disables starting.
+- Do not assume a guest IP address.
+
+### Execution
+
+- All run/shell/workspace execution goes through `internal/executor`.
+- Pass argv separately; never build a shell string from user input and never use
+  `cd ... && ...` as the execution mechanism. Use
+  `limactl shell --workdir <guest-path>`.
+- Interactive commands inherit terminal streams so `limactl`/SSH allocates the
+  PTY, forwards window size and propagates child exit status. Non-interactive
+  commands are piped to suppress an unwanted PTY.
+- Non-interactive children run in a separate process group and are killed as a
+  group on SIGINT/SIGTERM. Interactive terminal SIGINT is left to SSH.
+- Preserve guest exit codes through the error chain so `boxt` exits with the same
+  status. Do not leak full internal `limactl` argv into normal errors.
+- `interactive: true` needs a host terminal for a guest PTY; warn when stdout is
+  redirected.
+
+### Toolchain
+
+- mise is an internal implementation detail. Never require or merge `mise.toml`,
+  `.mise.toml` or user mise configuration.
+- Run mise with `MISE_NO_CONFIG=1` and `MISE_EXEC_AUTO_INSTALL=0`.
+- Install the pinned mise release from the official `https://mise.run` endpoint
+  into a private `mktemp` file. Accept an existing newer mise binary.
+- Use apt only for system dependencies (curl, CA certificates, Git, tar, xz,
+  unzip); use sudo only for provisioning/system administration.
+- `tool add`: update config first, install immediately when running, defer when
+  stopped/missing, keep the declaration on failure and point at `boxt provision`.
+- `tool remove`: remove only the declaration; never uninstall shared software.
+- Reconciliation must skip satisfied tools and be safe to run repeatedly.
+
+### Workspaces
+
+- Use real Git worktrees, never manual copies or `rm -rf`.
+- Worktrees live outside the project checkout under the project-scoped data dir.
+- Default branch: `boxt/<workspace>`; `--branch` may override. Recreating a
+  workspace reuses an existing branch if present.
+- Store the owning project root in the worktree's Git admin directory as
+  `boxt-project`, so commands run from inside a workspace resolve the same VM.
+- Reject workspace names that are absolute, traversal-based, reserved (`default`)
+  or otherwise unsafe. Reject duplicates.
+- Creation is atomic: verify the checkout and write metadata; roll back the
+  worktree (and only a newly-created branch) if post-add setup fails.
+- Removal:
+  - refuse uncommitted changes (`--force` to discard);
+  - refuse ignored files such as `.env`/caches (`--force` to discard);
+  - refuse locked worktrees (unlock with Git);
+  - never prune unrelated worktrees;
+  - handle stale metadata by targeted removal of that worktree only;
+  - never delete the branch.
+- Only boxt-created worktrees are managed. Do not treat unrelated manual Git
+  worktrees as boxt workspaces.
+
+### Project discovery
+
+- Find the nearest ancestor `.boxt/config.yaml`.
+- From a boxt worktree, resolve the owning project via `boxt-project` metadata.
+- A nested initialized project inside a workspace wins over the enclosing
+  workspace's metadata.
+- Refuse unmanaged linked worktrees that contain a copied `.boxt` config, and
+  refuse home/root project roots.
+- Never initialize a project implicitly; produce a helpful `boxt init` hint.
+
+### Safety and UX
+
+- `boxt destroy` deletes only the VM. Project files, config and worktrees remain.
+  Confirmation is interactive (`yes`) or `--yes`.
+- Do not silently expose services beyond loopback. `auto` forwarding is loopback
+  only; `host_ip: 0.0.0.0` is an explicit LAN exposure.
+- Provide actionable errors with hints. Keep normal output quiet; `-v` enables
+  command debug logs. Remember that command arguments may contain secrets.
+- Do not add Docker/Kubernetes, Nix, remote VMs, non-Git workspaces, active
+  workspace selection, a TUI, database service management, credential sync,
+  editor integration, or a plugin framework.
+
+## Testing
+
+Unit tests use fakes for external processes. Git tests use real temporary
+repositories, and config tests exercise locking, symlinks and atomic writes.
+
+Integration tests are gated and compile only with `-tags=integration`:
+
+```bash
+make build
+BOXT_INTEGRATION=1 \
+BOXT_INTEGRATION_MEMORY=512MiB \
+BOXT_INTEGRATION_LIMA_ROOT=/var/tmp \
+BOXT_LIMACTL=$(command -v limactl) \
+BOXT_BIN=$(pwd)/bin/boxt \
+go test -p 1 -tags=integration ./...
+```
+
+- `BOXT_INTEGRATION_MEMORY` defaults to `2GiB`; use a smaller guest on low-memory
+  hosts. Without KVM, QEMU TCG is slow and larger guests can be OOM-killed.
+- `BOXT_INTEGRATION_LIMA_ROOT` defaults to `/tmp`; point it at a filesystem with
+  room for Lima images/disks.
+- Integration coverage: VM lifecycle/persistence, project and workspace mounts,
+  guest user, PTY shell and exit status, tool install/persistence, dynamic port
+  forwarding, workspace host/guest visibility, destroy preservation.
+- Real validation has passed on Linux/aarch64 with Lima 2.3.0 and QEMU TCG.
+  macOS and Fedora VM runs remain host-specific and unverified in this repo's
+  environment.
+- Validate generated Lima YAML after config changes:
+
+```bash
+BOXT_LIMACTL=$(command -v limactl) go test ./internal/lima -run LimactlValidate
+```
+
+## Change checklist
+
+1. Keep CLI thin; external tools go through `internal/command`.
+2. Add or update unit tests for every behavior change.
+3. Run `make check`, `go test -race ./...`, and cross-build
+   `GOOS=darwin GOARCH=arm64` / `GOOS=linux GOARCH=amd64`.
+4. Run gated integration tests for VM, executor, toolchain or workspace changes.
+5. Update `README.md` for user-visible behavior and `AGENTS.md` for invariants.
+6. Check that destroy/removal paths still never delete project/user data.
+7. Verify config edits remain atomic, locked and comment/symlink preserving.
+
+The original implementation specification was removed after the MVP was
+completed. It remains available in Git history if historical requirements are
+needed.
