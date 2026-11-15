@@ -34,6 +34,71 @@ func TestCatalog(t *testing.T) {
 	}
 }
 
+type wantPreset struct {
+	tools         map[string]string
+	targets       []string
+	defaultTarget string
+	category      Category
+}
+
+func TestEveryPreset(t *testing.T) {
+	wants := map[string]wantPreset{
+		"minimal":  {tools: map[string]string{}, targets: nil, category: CategoryStack},
+		"node":     {tools: map[string]string{"node": "lts"}, targets: []string{"dev", "test"}, defaultTarget: "dev", category: CategoryStack},
+		"python":   {tools: map[string]string{"python": "latest"}, targets: []string{"python"}, category: CategoryStack},
+		"go":       {tools: map[string]string{"go": "latest"}, targets: []string{"build", "test"}, category: CategoryStack},
+		"rust":     {tools: map[string]string{"rust": "stable"}, targets: []string{"build", "test"}, category: CategoryStack},
+		"opencode": {tools: map[string]string{"node": "lts", "opencode": "latest"}, targets: []string{"opencode"}, defaultTarget: "opencode", category: CategoryAgent},
+		"codex":    {tools: map[string]string{"codex": "latest"}, targets: []string{"codex"}, defaultTarget: "codex", category: CategoryAgent},
+		"claude":   {tools: map[string]string{"claude": "latest"}, targets: []string{"claude"}, defaultTarget: "claude", category: CategoryAgent},
+	}
+
+	catalog := All()
+	if len(catalog) != len(wants) {
+		t.Fatalf("catalog has %d presets, expected map has %d", len(catalog), len(wants))
+	}
+	for _, p := range catalog {
+		t.Run(p.Name, func(t *testing.T) {
+			want, ok := wants[p.Name]
+			if !ok {
+				t.Fatalf("undocumented preset %q", p.Name)
+			}
+			if p.Category != want.category {
+				t.Fatalf("category = %q, want %q", p.Category, want.category)
+			}
+			if p.Summary == "" {
+				t.Fatal("preset has no summary")
+			}
+			for name, version := range p.Tools {
+				if !config.ValidToolName(name) || !config.ValidToolVersion(version) {
+					t.Fatalf("invalid tool %s@%s", name, version)
+				}
+			}
+			for name, target := range p.Targets {
+				if !config.ValidTargetName(name) || len(target.Command) == 0 {
+					t.Fatalf("invalid target %q: %#v", name, target)
+				}
+			}
+			result, err := Resolve([]string{p.Name}, "")
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if !reflect.DeepEqual(result.Config.Tools, want.tools) {
+				t.Fatalf("tools = %#v, want %#v", result.Config.Tools, want.tools)
+			}
+			if got := result.Config.TargetNames(); !reflect.DeepEqual(got, want.targets) && !(len(got) == 0 && len(want.targets) == 0) {
+				t.Fatalf("targets = %#v, want %#v", got, want.targets)
+			}
+			if result.Config.Run.Default != want.defaultTarget {
+				t.Fatalf("default = %q, want %q", result.Config.Run.Default, want.defaultTarget)
+			}
+			if result.DefaultTarget != want.defaultTarget {
+				t.Fatalf("resolved default = %q, want %q", result.DefaultTarget, want.defaultTarget)
+			}
+		})
+	}
+}
+
 func TestResolveOpencode(t *testing.T) {
 	result, err := Resolve([]string{"opencode"}, "")
 	if err != nil {

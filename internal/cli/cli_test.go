@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/daveagill/boxt/internal/command"
 	"github.com/daveagill/boxt/internal/config"
 	"github.com/daveagill/boxt/internal/git"
+	"github.com/daveagill/boxt/internal/preset"
 	"github.com/daveagill/boxt/internal/project"
 )
 
@@ -278,15 +280,44 @@ func TestInitPresetsDoNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestInitEveryPresetWritesValidConfig(t *testing.T) {
+	for _, name := range preset.Names() {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			app, out, errOut := testApp(t, dir)
+			if code := Run(context.Background(), app, []string{"init", "--preset", name}); code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut.String())
+			}
+			if !strings.Contains(out.String(), "Presets: "+name) {
+				t.Fatalf("output missing preset name:\n%s", out.String())
+			}
+			p, err := project.Open(dir)
+			if err != nil {
+				t.Fatalf("open project: %v", err)
+			}
+			want, err := preset.Resolve([]string{name}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(p.Config, want.Config) {
+				t.Fatalf("config mismatch:\n got %#v\nwant %#v", p.Config, want.Config)
+			}
+		})
+	}
+}
+
 func TestInitHelpShowsPresets(t *testing.T) {
 	app, out, _ := testApp(t, t.TempDir())
 	if code := Run(context.Background(), app, []string{"init", "--help"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	for _, want := range []string{"opencode", "codex", "node", "--default-target"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("help missing %q:\n%s", want, out.String())
+	for _, name := range preset.Names() {
+		if !strings.Contains(out.String(), name) {
+			t.Fatalf("help missing preset %q:\n%s", name, out.String())
 		}
+	}
+	if !strings.Contains(out.String(), "--default-target") {
+		t.Fatalf("help missing --default-target:\n%s", out.String())
 	}
 }
 
