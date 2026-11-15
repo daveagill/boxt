@@ -7,7 +7,7 @@ vm:
   port_forwarding: auto
 
 tools:
-  node: "24"
+  node: "lts"
   codex: latest
 
 run:

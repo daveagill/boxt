@@ -145,7 +145,7 @@ func TestInitWithAgentPreset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Tools["node"] != "24" || cfg.Tools["opencode"] != "latest" {
+	if cfg.Tools["node"] != "lts" || cfg.Tools["opencode"] != "latest" {
 		t.Fatalf("tools = %#v", cfg.Tools)
 	}
 	target, ok := cfg.Run.Targets["opencode"]

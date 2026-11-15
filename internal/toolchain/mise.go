@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/daveagill/boxt/internal/command"
@@ -247,7 +248,7 @@ func (m *Manager) Install(ctx context.Context, p *project.Project, name, version
 	if _, err := m.EnsureMise(ctx, p); err != nil {
 		return "", err
 	}
-	if version != "latest" {
+	if !isFloatingVersion(version) {
 		if data, err := m.queryInstalled(ctx, p); err == nil {
 			status := statusFor(ToolStatus{Name: name, Declared: version}, data[name])
 			if status.State == StateInstalled {
@@ -324,11 +325,25 @@ func parseMiseLS(raw string) (map[string][]miseEntry, error) {
 }
 
 func statusFor(status ToolStatus, entries []miseEntry) ToolStatus {
-	var fallback string
+	var installed []miseEntry
 	for _, e := range entries {
-		if !e.Installed && e.InstallPath == "" {
-			continue
+		if e.Installed || e.InstallPath != "" {
+			installed = append(installed, e)
 		}
+	}
+	if isFloatingVersion(status.Declared) && len(installed) > 0 {
+		best := installed[0]
+		for _, e := range installed[1:] {
+			if compareVersions(e.Version, best.Version) > 0 {
+				best = e
+			}
+		}
+		status.Installed = best.Version
+		status.State = StateInstalled
+		return status
+	}
+	var fallback string
+	for _, e := range installed {
 		if fallback == "" {
 			fallback = e.Version
 		}
@@ -347,11 +362,61 @@ func statusFor(status ToolStatus, entries []miseEntry) ToolStatus {
 	return status
 }
 
+// compareVersions compares simple dotted numeric versions. Non-numeric suffixes
+// are compared lexically after the numeric prefixes.
+func compareVersions(a, b string) int {
+	pa := splitVersion(a)
+	pb := splitVersion(b)
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var av, bv string
+		if i < len(pa) {
+			av = pa[i]
+		}
+		if i < len(pb) {
+			bv = pb[i]
+		}
+		an, aerr := strconv.Atoi(av)
+		bn, berr := strconv.Atoi(bv)
+		if aerr == nil && berr == nil {
+			if an < bn {
+				return -1
+			}
+			if an > bn {
+				return 1
+			}
+			continue
+		}
+		if av < bv {
+			return -1
+		}
+		if av > bv {
+			return 1
+		}
+	}
+	return 0
+}
+
+func splitVersion(v string) []string {
+	v = strings.TrimPrefix(v, "v")
+	return strings.FieldsFunc(v, func(r rune) bool {
+		return r == '.' || r == '-' || r == '+'
+	})
+}
+
+func isFloatingVersion(version string) bool {
+	switch version {
+	case "latest", "lts", "stable":
+		return true
+	default:
+		return false
+	}
+}
+
 func versionMatches(declared, candidate string) bool {
 	if declared == "" || candidate == "" {
 		return false
 	}
-	if declared == "latest" || candidate == "latest" {
+	if isFloatingVersion(declared) || isFloatingVersion(candidate) {
 		return true
 	}
 	if declared == candidate {

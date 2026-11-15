@@ -18,12 +18,12 @@ func TestCatalog(t *testing.T) {
 		t.Fatalf("All() returned %d presets", len(All()))
 	}
 	p, ok := Lookup("opencode")
-	if !ok || p.Category != CategoryAgent || p.Tools["node"] != "24" || p.Tools["opencode"] != "latest" {
+	if !ok || p.Category != CategoryAgent || p.Tools["node"] != "lts" || p.Tools["opencode"] != "latest" {
 		t.Fatalf("unexpected opencode preset: %#v", p)
 	}
 	p.Tools["node"] = "99"
 	again, _ := Lookup("opencode")
-	if again.Tools["node"] != "24" {
+	if again.Tools["node"] != "lts" {
 		t.Fatal("Lookup did not return a clone")
 	}
 	if !strings.Contains(HelpText(), "opencode") || !strings.Contains(HelpText(), "node") {
@@ -40,7 +40,7 @@ func TestResolveOpencode(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := result.Config
-	if cfg.Tools["node"] != "24" || cfg.Tools["opencode"] != "latest" {
+	if cfg.Tools["node"] != "lts" || cfg.Tools["opencode"] != "latest" {
 		t.Fatalf("tools = %#v", cfg.Tools)
 	}
 	target, ok := cfg.Run.Targets["opencode"]

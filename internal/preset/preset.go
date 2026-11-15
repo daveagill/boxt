@@ -39,8 +39,8 @@ var builtins = []Preset{
 	{
 		Name:     "node",
 		Category: CategoryStack,
-		Summary:  "Node 24 with dev/test targets",
-		Tools:    map[string]string{"node": "24"},
+		Summary:  "Node LTS with dev/test targets",
+		Tools:    map[string]string{"node": "lts"},
 		Targets: map[string]config.RunTarget{
 			"dev":  {Command: []string{"npm", "run", "dev"}},
 			"test": {Command: []string{"npm", "test"}},
@@ -50,8 +50,8 @@ var builtins = []Preset{
 	{
 		Name:     "python",
 		Category: CategoryStack,
-		Summary:  "Python 3.13 with an interactive python target",
-		Tools:    map[string]string{"python": "3.13"},
+		Summary:  "Latest Python with an interactive target",
+		Tools:    map[string]string{"python": "latest"},
 		Targets: map[string]config.RunTarget{
 			"python": {Command: []string{"python"}, Interactive: true},
 		},
@@ -59,8 +59,8 @@ var builtins = []Preset{
 	{
 		Name:     "go",
 		Category: CategoryStack,
-		Summary:  "Go 1.24 with build/test targets",
-		Tools:    map[string]string{"go": "1.24"},
+		Summary:  "Latest Go with build/test targets",
+		Tools:    map[string]string{"go": "latest"},
 		Targets: map[string]config.RunTarget{
 			"build": {Command: []string{"go", "build", "./..."}},
 			"test":  {Command: []string{"go", "test", "./..."}},
@@ -69,8 +69,8 @@ var builtins = []Preset{
 	{
 		Name:     "rust",
 		Category: CategoryStack,
-		Summary:  "Rust with build/test targets",
-		Tools:    map[string]string{"rust": "latest"},
+		Summary:  "Rust stable with build/test targets",
+		Tools:    map[string]string{"rust": "stable"},
 		Targets: map[string]config.RunTarget{
 			"build": {Command: []string{"cargo", "build"}},
 			"test":  {Command: []string{"cargo", "test"}},
@@ -79,8 +79,8 @@ var builtins = []Preset{
 	{
 		Name:          "opencode",
 		Category:      CategoryAgent,
-		Summary:       "OpenCode with Node, interactive target",
-		Tools:         map[string]string{"node": "24", "opencode": "latest"},
+		Summary:       "OpenCode with Node LTS, interactive target",
+		Tools:         map[string]string{"node": "lts", "opencode": "latest"},
 		Targets:       map[string]config.RunTarget{"opencode": {Command: []string{"opencode"}, Interactive: true}},
 		DefaultTarget: "opencode",
 	},

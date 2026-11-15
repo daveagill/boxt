@@ -100,6 +100,10 @@ func (f *fakeGuest) Shell(ctx context.Context, req lima.ShellRequest) error {
 			resolved = "24.22.3"
 		case "3.13":
 			resolved = "3.13.18"
+		case "lts":
+			resolved = "26.13.1"
+		case "stable":
+			resolved = "1.100.0"
 		default:
 			resolved = version + ".1"
 		}
@@ -180,6 +184,9 @@ func TestVersionMatches(t *testing.T) {
 		{"2", "24.1.0", false},
 		{"latest", "1.2.3", true},
 		{"1.2.3", "latest", true},
+		{"lts", "26.13.1", true},
+		{"stable", "1.100.0", true},
+		{"lts", "lts", true},
 		{"", "1.2.3", false},
 	}
 	for _, tt := range tests {
@@ -201,6 +208,8 @@ func TestStatusFor(t *testing.T) {
 		{"installed via requested", ToolStatus{Name: "node", Declared: "24"}, []miseEntry{{Version: "24.22.3", RequestedVersion: "24", Installed: true}}, StateInstalled, "24.22.3"},
 		{"installed via version", ToolStatus{Name: "node", Declared: "24"}, []miseEntry{{Version: "24.22.3", Installed: true}}, StateInstalled, "24.22.3"},
 		{"mismatch", ToolStatus{Name: "python", Declared: "3.13"}, []miseEntry{{Version: "3.12.1", RequestedVersion: "3.12", Installed: true}}, StateMismatch, "3.12.1"},
+		{"lts picks highest", ToolStatus{Name: "node", Declared: "lts"}, []miseEntry{{Version: "24.22.3", Installed: true}, {Version: "26.13.1", Installed: true}}, StateInstalled, "26.13.1"},
+		{"latest picks highest", ToolStatus{Name: "python", Declared: "latest"}, []miseEntry{{Version: "3.13.18", Installed: true}, {Version: "3.15.2", Installed: true}}, StateInstalled, "3.15.2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -209,6 +218,24 @@ func TestStatusFor(t *testing.T) {
 				t.Fatalf("got %#v, want state %s version %s", got, tt.want, tt.version)
 			}
 		})
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"24.22.3", "26.13.1", -1},
+		{"26.13.1", "26.13.1", 0},
+		{"26.13.2", "26.13.1", 1},
+		{"v1.2.0", "1.10.0", -1},
+		{"1.100.0", "1.99.0", 1},
+	}
+	for _, tt := range tests {
+		if got := compareVersions(tt.a, tt.b); got != tt.want {
+			t.Errorf("compareVersions(%q,%q)=%d want %d", tt.a, tt.b, got, tt.want)
+		}
 	}
 }
 
@@ -315,6 +342,24 @@ func TestProvisionIdempotent(t *testing.T) {
 	}
 	if strings.Contains(joined, "mise install node@24") {
 		t.Fatalf("second provision reinstalled a satisfied tool:\n%s", joined)
+	}
+}
+
+func TestProvisionReinstallsFloatingVersions(t *testing.T) {
+	g := newFakeGuest()
+	g.depsReady = true
+	g.miseInstalled = true
+	g.tools["node"] = fakeTool{Requested: "lts", Version: "26.13.1"}
+	p := testProject(map[string]string{"node": "lts"})
+	report, err := New(g).Provision(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Tools) != 1 || report.Tools[0].Installed != "26.13.1" {
+		t.Fatalf("report = %#v", report)
+	}
+	if joined := allCommands(g); !strings.Contains(joined, "mise install node@lts") {
+		t.Fatalf("floating version was not reinstalled/checked:\n%s", joined)
 	}
 }
 

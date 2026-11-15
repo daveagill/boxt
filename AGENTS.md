@@ -136,6 +136,9 @@ examples/node-app/        complete runnable example
 - `tool remove`: remove only the declaration; never uninstall shared software.
   Warn if a run target still references the tool.
 - Reconciliation must skip satisfied tools and be safe to run repeatedly.
+  Floating aliases (`latest`, `lts`, `stable`) are re-checked on provision.
+  OpenCode's current mise backend is npm-based and requires Node; the preset
+  intentionally includes Node LTS.
 
 ### Workspaces
 

@@ -117,7 +117,7 @@ vm:
 
 # Tools are installed into the project VM. Example:
 # tools:
-#   node: "24"
+#   node: "lts"
 tools: {}
 
 run:

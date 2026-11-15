@@ -58,7 +58,7 @@ func (m *Manager) Provision(ctx context.Context, p *project.Project) (*Report, e
 	for _, name := range p.Config.ToolNames() {
 		declared := p.Config.Tools[name]
 		result := ToolResult{Name: name, Declared: declared, Installed: declared}
-		if s, ok := installed[name]; ok && s.State == StateInstalled && declared != "latest" {
+		if s, ok := installed[name]; ok && s.State == StateInstalled && !isFloatingVersion(declared) {
 			result.Installed = s.Installed
 			report.Tools = append(report.Tools, result)
 			continue

@@ -216,8 +216,8 @@ vm:
   auto_start: true
 
 tools:
-  node: "24"
-  python: "3.13"
+  node: "lts"
+  python: "latest"
 
 run:
   default: dev
@@ -244,13 +244,16 @@ not remember which preset was used.
 | Preset | Contents |
 |---|---|
 | `minimal` | VM defaults only |
-| `node` | Node 24; `dev` and `test` targets; default `dev` |
-| `python` | Python 3.13; interactive `python` target |
-| `go` | Go 1.24; `build` and `test` targets |
-| `rust` | Rust; `build` and `test` targets |
-| `opencode` | Node 24 + OpenCode; interactive target; default `opencode` |
+| `node` | Node LTS; `dev` and `test` targets; default `dev` |
+| `python` | Latest Python; interactive `python` target |
+| `go` | Latest Go; `build` and `test` targets |
+| `rust` | Rust stable; `build` and `test` targets |
+| `opencode` | Node LTS + OpenCode; interactive target; default `opencode` |
 | `codex` | Codex CLI; interactive target; default `codex` |
 | `claude` | Claude Code; interactive target; default `claude` |
+
+Node uses mise's `lts` alias. Python and Go do not have an LTS channel, so those
+presets use `latest`; Rust uses `stable`.
 
 Presets compose:
 
@@ -284,7 +287,12 @@ boxt init --preset node --preset opencode --default-target opencode
 ```
 
 Use `boxt init --help` to list presets. Shell completion for `--preset` is
-available.
+available. Presets use floating runtime versions (`node: lts`, `python: latest`,
+`go: latest`, `rust: stable`) so `boxt provision` refreshes them; pin exact
+versions in `.boxt/config.yaml` when reproducibility matters.
+
+OpenCode currently installs through mise's npm backend, which requires Node.
+The `opencode` preset therefore includes Node LTS.
 
 ## Tools
 
@@ -293,8 +301,8 @@ Installed tools and caches live in the guest home and survive `boxt down` /
 `boxt up`.
 
 ```bash
-boxt tool add node@24
-boxt tool add python@3.13
+boxt tool add node@lts
+boxt tool add python@latest
 boxt tool add opencode@latest --target --interactive
 boxt tool list
 boxt tool remove node
