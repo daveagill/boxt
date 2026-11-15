@@ -121,6 +121,8 @@ func workspaceStatus(ws workspace.Workspace) string {
 	switch {
 	case ws.Missing:
 		return "missing"
+	case ws.Broken:
+		return "broken"
 	case ws.Locked:
 		return "locked"
 	default:
@@ -229,13 +231,7 @@ func (a *App) workspaceRun(ctx context.Context, args []string, dash int, noStart
 	if err != nil {
 		return err
 	}
-	if err := a.requireLima(); err != nil {
-		return err
-	}
-	if err := a.ensureVMForExecution(ctx, p, !noStart); err != nil {
-		return err
-	}
-	return a.execute(ctx, p, ws.Name, ws.GuestPath, inv)
+	return a.execute(ctx, p, ws.Name, ws.GuestPath, inv, !noStart)
 }
 
 func workspaceRunArgs(args []string, dash int) (name string, rest []string, restDash int, err error) {
@@ -281,11 +277,5 @@ func (a *App) workspaceShell(ctx context.Context, name string, noStart bool) err
 	if err != nil {
 		return err
 	}
-	if err := a.requireLima(); err != nil {
-		return err
-	}
-	if err := a.ensureVMForExecution(ctx, p, !noStart); err != nil {
-		return err
-	}
-	return a.execute(ctx, p, ws.Name, ws.GuestPath, a.shellInvocation(p))
+	return a.execute(ctx, p, ws.Name, ws.GuestPath, a.shellInvocation(p), !noStart)
 }

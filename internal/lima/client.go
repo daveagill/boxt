@@ -139,12 +139,13 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 
 // ShellRequest describes one guest shell invocation.
 type ShellRequest struct {
-	Instance string
-	WorkDir  string
-	Command  []string
-	Stdin    io.Reader
-	Stdout   io.Writer
-	Stderr   io.Writer
+	Instance        string
+	WorkDir         string
+	Command         []string
+	Stdin           io.Reader
+	Stdout          io.Writer
+	Stderr          io.Writer
+	NewProcessGroup bool
 }
 
 // Shell executes a command (or an interactive shell when Command is empty) in
@@ -164,11 +165,12 @@ func (c *Client) Shell(ctx context.Context, req ShellRequest) error {
 		args = append(args, req.Command...)
 	}
 	err := c.Runner.Run(ctx, command.Command{
-		Name:   c.bin(),
-		Args:   args,
-		Stdin:  req.Stdin,
-		Stdout: req.Stdout,
-		Stderr: req.Stderr,
+		Name:            c.bin(),
+		Args:            args,
+		Stdin:           req.Stdin,
+		Stdout:          req.Stdout,
+		Stderr:          req.Stderr,
+		NewProcessGroup: req.NewProcessGroup,
 	})
 	if err != nil {
 		return err

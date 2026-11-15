@@ -4,9 +4,13 @@ package lima
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -17,6 +21,10 @@ import (
 
 // ConfigFileName is the generated Lima YAML file name inside the VM directory.
 const ConfigFileName = "lima.yaml"
+
+// FingerprintFileName stores the fingerprint of user-controlled VM settings
+// that Lima only applies at creation time.
+const FingerprintFileName = "config.sha256"
 
 // Ubuntu 24.04 cloud image snapshot. The snapshot and digests are pinned for
 // reproducible downloads; update them when refreshing the supported image.
@@ -85,13 +93,15 @@ type limaPortForward struct {
 }
 
 type limaYAML struct {
-	Images       []limaImage       `yaml:"images"`
-	CPUs         int               `yaml:"cpus"`
-	Memory       string            `yaml:"memory"`
-	User         limaUser          `yaml:"user"`
-	Mounts       []limaMount       `yaml:"mounts"`
-	Containerd   limaContainerd    `yaml:"containerd"`
-	PortForwards []limaPortForward `yaml:"portForwards,omitempty"`
+	MinimumLimaVersion string            `yaml:"minimumLimaVersion"`
+	Images             []limaImage       `yaml:"images"`
+	CPUs               int               `yaml:"cpus"`
+	Memory             string            `yaml:"memory"`
+	User               limaUser          `yaml:"user"`
+	Mounts             []limaMount       `yaml:"mounts"`
+	Containerd         limaContainerd    `yaml:"containerd"`
+	PropagateProxyEnv  *bool             `yaml:"propagateProxyEnv,omitempty"`
+	PortForwards       []limaPortForward `yaml:"portForwards,omitempty"`
 }
 
 // GuestPath constants define the single host-to-guest mapping.
@@ -124,6 +134,11 @@ func GenerateConfig(opts VMOptions) ([]byte, error) {
 	if !filepath.IsAbs(opts.WorkspacesDir) {
 		return nil, fmt.Errorf("workspaces directory must be absolute: %q", opts.WorkspacesDir)
 	}
+	projectRoot := canonicalCompare(opts.ProjectRoot)
+	workspacesRoot := canonicalCompare(opts.WorkspacesDir)
+	if projectRoot == workspacesRoot || pathContains(projectRoot, workspacesRoot) || pathContains(workspacesRoot, projectRoot) {
+		return nil, fmt.Errorf("workspace data directory %s must be outside the project root %s", opts.WorkspacesDir, opts.ProjectRoot)
+	}
 	if opts.CPUs < 1 {
 		return nil, fmt.Errorf("cpus must be positive")
 	}
@@ -132,9 +147,10 @@ func GenerateConfig(opts VMOptions) ([]byte, error) {
 	}
 
 	doc := limaYAML{
-		Images: ubuntuImages,
-		CPUs:   opts.CPUs,
-		Memory: opts.Memory,
+		MinimumLimaVersion: "2.0.0",
+		Images:             ubuntuImages,
+		CPUs:               opts.CPUs,
+		Memory:             opts.Memory,
 		User: limaUser{
 			Name:             GuestUser,
 			Home:             GuestUserHome,
@@ -147,6 +163,8 @@ func GenerateConfig(opts VMOptions) ([]byte, error) {
 		},
 		Containerd: limaContainerd{System: false, User: false},
 	}
+	propagateProxy := false
+	doc.PropagateProxyEnv = &propagateProxy
 	for _, p := range opts.Ports {
 		hostIP := p.HostIP
 		if hostIP == "" {
@@ -193,6 +211,65 @@ func WriteConfig(vmDir string, data []byte) (string, error) {
 	return path, nil
 }
 
+// Fingerprint hashes the user-controlled VM settings that Lima applies only at
+// instance creation. Image/version changes are intentionally excluded so
+// upgrading boxt does not force every VM to be recreated.
+func Fingerprint(opts VMOptions) string {
+	portForwarding := opts.PortForwarding
+	if portForwarding == "" {
+		portForwarding = config.PortForwardingAuto
+	}
+	memory := opts.Memory
+	if b, err := config.MemoryBytes(memory); err == nil {
+		memory = fmt.Sprintf("%d", b)
+	}
+	type port struct {
+		Guest  int
+		Host   int
+		HostIP string
+	}
+	ports := make([]port, 0, len(opts.Ports))
+	for _, p := range opts.Ports {
+		ip := p.HostIP
+		if ip == "" {
+			ip = "127.0.0.1"
+		}
+		ports = append(ports, port{Guest: p.Guest, Host: p.Host, HostIP: ip})
+	}
+	sort.Slice(ports, func(i, j int) bool {
+		if ports[i].Guest != ports[j].Guest {
+			return ports[i].Guest < ports[j].Guest
+		}
+		return ports[i].Host < ports[j].Host
+	})
+	payload := struct {
+		ProjectID     string
+		ProjectRoot   string
+		WorkspacesDir string
+		CPUs          int
+		Memory        string
+		Forwarding    string
+		Ports         []port
+	}{
+		ProjectID:     opts.ProjectID,
+		ProjectRoot:   filepath.Clean(opts.ProjectRoot),
+		WorkspacesDir: filepath.Clean(opts.WorkspacesDir),
+		CPUs:          opts.CPUs,
+		Memory:        memory,
+		Forwarding:    portForwarding,
+		Ports:         ports,
+	}
+	encoded, _ := json.Marshal(payload)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+// WriteFingerprint records the applied VM configuration fingerprint.
+func WriteFingerprint(vmDir, fingerprint string) error {
+	path := filepath.Join(vmDir, FingerprintFileName)
+	return fsutil.WriteFileAtomic(path, []byte(fingerprint+"\n"), 0o644)
+}
+
 // MountLocations returns the exact host paths mounted by a generated config.
 // It is used by tests and diagnostics.
 func MountLocations(data []byte) ([]string, error) {
@@ -205,6 +282,21 @@ func MountLocations(data []byte) ([]string, error) {
 		out = append(out, m.Location)
 	}
 	return out, nil
+}
+
+func canonicalCompare(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ValidateGenerated performs basic structural checks independent of limactl.

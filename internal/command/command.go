@@ -10,18 +10,20 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // Command describes an external process invocation. Arguments are always
 // passed separately, never as a shell string.
 type Command struct {
-	Name   string
-	Args   []string
-	Dir    string
-	Env    []string
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Name            string
+	Args            []string
+	Dir             string
+	Env             []string
+	Stdin           io.Reader
+	Stdout          io.Writer
+	Stderr          io.Writer
+	NewProcessGroup bool
 }
 
 // Runner executes external commands. Tests substitute a fake.
@@ -45,7 +47,19 @@ func (ExecRunner) Run(ctx context.Context, c Command) error {
 	cmd.Stdin = c.Stdin
 	cmd.Stdout = c.Stdout
 	cmd.Stderr = c.Stderr
+	if c.NewProcessGroup {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error {
+			if cmd.Process == nil {
+				return nil
+			}
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+	}
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return &Error{Name: c.Name, Args: c.Args, ExitCode: 130, Err: ctxErr}
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return &Error{

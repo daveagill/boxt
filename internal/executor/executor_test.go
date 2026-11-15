@@ -61,6 +61,9 @@ func TestExecuteNonInteractive(t *testing.T) {
 	if _, ok := req.Stderr.(nonFileWriter); !ok {
 		t.Fatalf("non-interactive stderr is %T, want nonFileWriter", req.Stderr)
 	}
+	if !req.NewProcessGroup {
+		t.Fatal("non-interactive command should use a separate process group")
+	}
 	_, _ = io.WriteString(req.Stdout, "hello stdout")
 	_, _ = io.WriteString(req.Stderr, "hello stderr")
 	if out.String() != "hello stdout" || errOut.String() != "hello stderr" {
@@ -86,6 +89,9 @@ func TestExecuteInteractiveUsesTerminalStreams(t *testing.T) {
 	req := g.requests[0]
 	if req.Stdout != out || req.Stderr != errOut || req.Stdin != in {
 		t.Fatalf("interactive streams were replaced: %#v", req)
+	}
+	if req.NewProcessGroup {
+		t.Fatal("interactive command should stay in the terminal process group")
 	}
 }
 
@@ -175,6 +181,15 @@ func TestExecuteExitStatusPreserved(t *testing.T) {
 	var exitCoder command.ExitCoder
 	if !errors.As(err, &exitCoder) || exitCoder.ExitStatus() != 7 {
 		t.Fatalf("exit status not preserved: %v", err)
+	}
+	if strings.Contains(err.Error(), "limactl shell") {
+		t.Fatalf("error leaks Lima argv: %v", err)
+	}
+	if !strings.Contains(err.Error(), "false failed") {
+		t.Fatalf("error does not name the guest command: %v", err)
+	}
+	if strings.Contains(err.Error(), "default:") {
+		t.Fatalf("error leaks workspace prefix: %v", err)
 	}
 }
 

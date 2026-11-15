@@ -18,6 +18,33 @@ import (
 	"github.com/boxt/boxt/internal/project"
 )
 
+func integrationMemory() string {
+	if v := os.Getenv("BOXT_INTEGRATION_MEMORY"); v != "" {
+		return v
+	}
+	return "2GiB"
+}
+
+func limaTempRoot() string {
+	if root := os.Getenv("BOXT_INTEGRATION_LIMA_ROOT"); root != "" {
+		return root
+	}
+	return "/tmp"
+}
+
+func shortLimaHome(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(limaTempRoot(), "lh-")
+	if err != nil {
+		dir, err = os.MkdirTemp("", "lh-")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestIntegrationProvisionPersistsAcrossRestart(t *testing.T) {
 	if os.Getenv("BOXT_INTEGRATION") != "1" {
 		t.Skip("set BOXT_INTEGRATION=1 to run Lima integration tests")
@@ -30,14 +57,14 @@ func TestIntegrationProvisionPersistsAcrossRestart(t *testing.T) {
 			t.Skip("limactl not installed")
 		}
 	}
-	t.Setenv("LIMA_HOME", t.TempDir())
+	t.Setenv("LIMA_HOME", shortLimaHome(t))
 	client := &lima.Client{Bin: bin, Runner: command.ExecRunner{}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	base := t.TempDir()
 	projectRoot := filepath.Join(base, "project")
-	workspaces := filepath.Join(base, "workspaces")
+	workspaces := filepath.Join(base, "workspaces", "0123456789abcdef")
 	for _, dir := range []string{projectRoot, workspaces} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -48,7 +75,7 @@ func TestIntegrationProvisionPersistsAcrossRestart(t *testing.T) {
 		ProjectRoot:   projectRoot,
 		WorkspacesDir: workspaces,
 		CPUs:          2,
-		Memory:        "2GiB",
+		Memory:        integrationMemory(),
 	})
 	if err != nil {
 		t.Fatal(err)

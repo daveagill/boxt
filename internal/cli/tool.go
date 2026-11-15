@@ -66,21 +66,31 @@ func (a *App) toolList(ctx context.Context) error {
 	}
 
 	limaAvailable := true
-	vmRunning := false
+	vmState := "missing"
 	lookPath := a.LookPath
 	if lookPath == nil {
 		lookPath = exec.LookPath
 	}
 	if err := platform.CheckLima(runtime.GOOS, lookPath); err != nil {
 		limaAvailable = false
+		vmState = "lima-unavailable"
 	} else {
 		status, err := a.Lima.Inspect(ctx, p.VMName())
 		if err != nil {
 			return err
 		}
-		vmRunning = status.Exists && status.Running
+		switch {
+		case !status.Exists:
+			vmState = "missing"
+		case status.Running:
+			vmState = "running"
+		case status.Instance.Status == "Stopped":
+			vmState = "stopped"
+		default:
+			vmState = "broken"
+		}
 	}
-	if limaAvailable && vmRunning && a.Toolchain != nil {
+	if limaAvailable && vmState == "running" && a.Toolchain != nil {
 		statuses, err = a.Toolchain.List(ctx, p)
 		if err != nil {
 			return fmt.Errorf("inspect installed tools: %w (run `boxt provision` to repair the toolchain)", err)
@@ -94,17 +104,22 @@ func (a *App) toolList(ctx context.Context) error {
 		if installed == "" {
 			installed = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.Name, s.Declared, installed, toolStateLabel(s, limaAvailable, vmRunning))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.Name, s.Declared, installed, toolStateLabel(s, limaAvailable, vmState))
 	}
 	return w.Flush()
 }
 
-func toolStateLabel(s toolchain.ToolStatus, limaAvailable, vmRunning bool) string {
+func toolStateLabel(s toolchain.ToolStatus, limaAvailable bool, vmState string) string {
 	if !limaAvailable {
 		return "Lima unavailable"
 	}
-	if !vmRunning {
+	switch vmState {
+	case "missing":
+		return "VM not created"
+	case "stopped":
 		return "VM stopped"
+	case "broken":
+		return "VM broken"
 	}
 	return string(s.State)
 }

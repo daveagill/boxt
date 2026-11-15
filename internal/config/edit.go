@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 
@@ -60,6 +61,31 @@ func RemoveTool(path, name string) error {
 }
 
 func mutateTools(path string, mutate func(*yaml.Node) error) error {
+	target, err := resolveConfigPath(path)
+	if err != nil {
+		return err
+	}
+	return fsutil.WithLock(target, func() error {
+		return mutateToolsLocked(target, mutate)
+	})
+}
+
+func resolveConfigPath(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect configuration: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return path, nil
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve configuration symlink: %w", err)
+	}
+	return resolved, nil
+}
+
+func mutateToolsLocked(path string, mutate func(*yaml.Node) error) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("inspect configuration: %w", err)

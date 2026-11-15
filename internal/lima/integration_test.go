@@ -28,8 +28,30 @@ func integrationClient(t *testing.T) (*Client, string) {
 			t.Skip("limactl not installed")
 		}
 	}
-	t.Setenv("LIMA_HOME", t.TempDir())
+	home, err := os.MkdirTemp(limaTempRoot(), "lh-")
+	if err != nil {
+		home, err = os.MkdirTemp("", "lh-")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("LIMA_HOME", home)
 	return &Client{Bin: bin, Runner: command.ExecRunner{}}, bin
+}
+
+func limaTempRoot() string {
+	if root := os.Getenv("BOXT_INTEGRATION_LIMA_ROOT"); root != "" {
+		return root
+	}
+	return "/tmp"
+}
+
+func integrationMemory() string {
+	if v := os.Getenv("BOXT_INTEGRATION_MEMORY"); v != "" {
+		return v
+	}
+	return "2GiB"
 }
 
 func TestIntegrationVMlifecycleAndMounts(t *testing.T) {
@@ -39,8 +61,8 @@ func TestIntegrationVMlifecycleAndMounts(t *testing.T) {
 
 	base := t.TempDir()
 	project := filepath.Join(base, "project")
-	workspaces := filepath.Join(base, "workspaces")
-	wsPath := filepath.Join(workspaces, "0123456789abcdef", "feature-a")
+	workspaces := filepath.Join(base, "workspaces", "0123456789abcdef")
+	wsPath := filepath.Join(workspaces, "feature-a")
 	for _, dir := range []string{project, wsPath} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -59,7 +81,7 @@ func TestIntegrationVMlifecycleAndMounts(t *testing.T) {
 		ProjectRoot:   project,
 		WorkspacesDir: workspaces,
 		CPUs:          2,
-		Memory:        "2GiB",
+		Memory:        integrationMemory(),
 	}
 	data, err := GenerateConfig(opts)
 	if err != nil {
@@ -143,7 +165,7 @@ func TestIntegrationValidateGeneratedConfig(t *testing.T) {
 		ProjectRoot:   filepath.Join(base, "project"),
 		WorkspacesDir: filepath.Join(base, "workspaces"),
 		CPUs:          2,
-		Memory:        "2GiB",
+		Memory:        integrationMemory(),
 	}
 	for _, dir := range []string{opts.ProjectRoot, opts.WorkspacesDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

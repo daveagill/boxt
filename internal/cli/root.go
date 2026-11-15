@@ -44,7 +44,7 @@ type App struct {
 
 	// Provision is installed by the toolchain layer. It runs after the VM is
 	// running and before boxt reports the environment ready.
-	Provision func(ctx context.Context, p *project.Project) error
+	Provision func(ctx context.Context, p *project.Project) (*toolchain.Report, error)
 
 	// PrepareCommand wraps guest argv with the internal toolchain environment.
 	PrepareCommand func(tools map[string]string, argv []string) []string
@@ -52,30 +52,51 @@ type App struct {
 
 // New returns the production application wiring.
 func New() *App {
-	runner := command.ExecRunner{}
 	app := &App{
 		In:       os.Stdin,
 		Out:      os.Stdout,
 		Err:      os.Stderr,
 		Getwd:    os.Getwd,
-		Runner:   runner,
-		Git:      git.New(runner),
-		Lima:     lima.New(runner),
-		DataDir:  platform.DataDir,
 		LookPath: exec.LookPath,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+	runner := &loggingRunner{
+		next: command.ExecRunner{},
+		log:  func() *slog.Logger { return app.Logger },
+	}
+	app.Runner = runner
+	app.Git = git.New(runner)
+	app.Lima = lima.New(runner)
+	app.DataDir = platform.DataDir
 	app.Confirm = defaultConfirm(app.In, app.Out)
 	app.Toolchain = toolchain.New(app.Lima)
-	app.Provision = func(ctx context.Context, p *project.Project) error {
+	app.Provision = func(ctx context.Context, p *project.Project) (*toolchain.Report, error) {
 		if app.Toolchain == nil {
-			return nil
+			return nil, nil
 		}
-		_, err := app.Toolchain.Provision(ctx, p)
-		return err
+		return app.Toolchain.Provision(ctx, p)
 	}
 	app.PrepareCommand = toolchain.WrapArgv
 	return app
+}
+
+// loggingRunner logs external commands at debug level without changing their
+// behavior. It never logs environment variables.
+type loggingRunner struct {
+	next command.Runner
+	log  func() *slog.Logger
+}
+
+func (l *loggingRunner) Run(ctx context.Context, c command.Command) error {
+	logger := l.log()
+	if logger != nil {
+		logger.Debug("exec", "command", c.Name, "args", c.Args, "dir", c.Dir)
+	}
+	err := l.next.Run(ctx, c)
+	if err != nil && logger != nil {
+		logger.Debug("exec failed", "command", c.Name, "error", err)
+	}
+	return err
 }
 
 func defaultConfirm(in io.Reader, out io.Writer) func(string) (bool, error) {
@@ -98,14 +119,14 @@ func defaultConfirm(in io.Reader, out io.Writer) func(string) (bool, error) {
 // NewRoot builds the Cobra command tree.
 func NewRoot(app *App) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "boxt",
+		Use:           "boxt [target] [-- command [args...]]",
 		Short:         "Persistent Linux development environments for projects",
 		Long:          "boxt gives each project a persistent Linux VM, shared toolchain and independent Git workspaces.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.NoArgs,
+		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.run(cmd.Context(), nil, -1, false)
+			return app.run(cmd.Context(), args, cmd.ArgsLenAtDash(), false)
 		},
 	}
 	root.SetIn(app.In)

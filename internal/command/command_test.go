@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestExecRunnerSuccess(t *testing.T) {
@@ -51,6 +56,71 @@ func TestExecRunnerMissingBinary(t *testing.T) {
 	}
 	if cmdErr.ExitStatus() != 1 {
 		t.Fatalf("exit status = %d, want 1", cmdErr.ExitStatus())
+	}
+}
+
+func TestExecRunnerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	err := (ExecRunner{}).Run(ctx, Command{Name: "sh", Args: []string{"-c", "sleep 5"}})
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("cancellation took %v", elapsed)
+	}
+	var cmdErr *Error
+	if !errors.As(err, &cmdErr) {
+		t.Fatalf("expected *Error, got %T", err)
+	}
+	if cmdErr.ExitStatus() != 130 {
+		t.Fatalf("exit status = %d, want 130", cmdErr.ExitStatus())
+	}
+}
+
+func TestExecRunnerCancellationKillsProcessGroup(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- (ExecRunner{}).Run(ctx, Command{
+			Name:            "sh",
+			Args:            []string{"-c", "sleep 5 & echo $! > " + pidFile + "; wait"},
+			NewProcessGroup: true,
+		})
+	}()
+	var pid int
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, err := os.ReadFile(pidFile)
+		if err == nil && strings.TrimSpace(string(data)) != "" {
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("grandchild PID was not written")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-errCh; err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("grandchild process %d survived cancellation (err=%v)", pid, err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

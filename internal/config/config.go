@@ -208,15 +208,16 @@ func (c *Config) ResolveTarget(name string) (RunTarget, bool) {
 // Create writes a new default configuration. It never overwrites an existing
 // project configuration.
 func Create(path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return ErrConfigExists
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect configuration: %w", err)
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create project directory: %w", err)
 	}
-	return fsutil.WriteFileAtomic(path, []byte(DefaultYAML), 0o644)
+	if err := fsutil.WriteFileExclusive(path, []byte(DefaultYAML), 0o644); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return ErrConfigExists
+		}
+		return err
+	}
+	return nil
 }
 
 // Marshal serializes a configuration with two-space indentation.

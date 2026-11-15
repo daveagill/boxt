@@ -47,9 +47,22 @@ func (m *Manager) Provision(ctx context.Context, p *project.Project) (*Report, e
 	report := &Report{MiseVersion: miseVersion}
 	var failures []error
 
+	// Reuse satisfied installations. If the inventory cannot be read, fall
+	// back to installing every declaration and let verification report errors.
+	existing, _ := m.List(ctx, p)
+	installed := make(map[string]ToolStatus, len(existing))
+	for _, s := range existing {
+		installed[s.Name] = s
+	}
+
 	for _, name := range p.Config.ToolNames() {
 		declared := p.Config.Tools[name]
 		result := ToolResult{Name: name, Declared: declared, Installed: declared}
+		if s, ok := installed[name]; ok && s.State == StateInstalled && declared != "latest" {
+			result.Installed = s.Installed
+			report.Tools = append(report.Tools, result)
+			continue
+		}
 		if err := m.installSpec(ctx, p, name, declared); err != nil {
 			result.Err = err
 			failures = append(failures, err)
@@ -69,8 +82,8 @@ func (m *Manager) Provision(ctx context.Context, p *project.Project) (*Report, e
 			result := &report.Tools[i]
 			if s, ok := byName[result.Name]; ok {
 				result.Installed = s.Installed
-				if result.Err == nil && s.State == StateMismatch {
-					result.Err = fmt.Errorf("%s %s: installed version %s does not match the declaration", result.Name, result.Declared, s.Installed)
+				if result.Err == nil && s.State != StateInstalled {
+					result.Err = fmt.Errorf("%s %s: tool is %s after provisioning", result.Name, result.Declared, s.State)
 					failures = append(failures, result.Err)
 				}
 			}

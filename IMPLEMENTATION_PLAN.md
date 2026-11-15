@@ -6,14 +6,16 @@ milestone with the full test suite.
 
 ## Environment constraints (verified)
 
-- Workspace started empty except for `plan.md`.
-- Go 1.27.1 on Linux/aarch64 (installed during setup).
+- Workspace started with `plan.md` only; now contains a complete Go implementation.
+- Go 1.27.1 on Linux/aarch64.
 - Git 2.55.0 available.
-- No `/dev/kvm`, no QEMU, no `limactl` in this container.
-- Therefore: Lima integration tests are written but gated (`BOXT_INTEGRATION=1` and
-  `limactl` present). Unit tests use command-runner fakes. Generated Lima YAML is
-  validated structurally in tests and, when possible, with a downloaded `limactl`.
-- Target hosts remain macOS arm64, Ubuntu x86_64/aarch64, Fedora x86_64/aarch64.
+- Lima 2.3.0 downloaded for config validation and real VM integration tests.
+- QEMU 11.0.3 installed; `/dev/kvm` is unavailable, so real VMs run under TCG
+  (slow but functional).
+- Integration tests are gated (`BOXT_INTEGRATION=1`, `BOXT_LIMACTL`, `BOXT_BIN`).
+  They passed in this environment with 512 MiB guests.
+- macOS and Fedora host-specific VM runs are not available here. Unit tests cover
+  platform path logic and all release targets cross-compile.
 
 ## Architecture summary
 
@@ -230,21 +232,25 @@ agent before acceptance.
 gofmt -l .
 go vet ./...
 go test ./...
-BOXT_INTEGRATION=1 go test -tags=integration ./...   # requires limactl + virtualization
+BOXT_INTEGRATION=1 BOXT_LIMACTL=$(command -v limactl) BOXT_BIN=$(pwd)/bin/boxt \
+  go test -p 1 -tags=integration ./...
 go build ./cmd/boxt
 ```
 
 ## Risks / open items
 
-- No KVM/Lima here: VM lifecycle, mounts, PTY-in-guest and persistence cannot be
-  executed locally; they are covered by fakes, generated-config validation and gated
-  integration tests. This limitation will be stated in the final report and README.
-- Lima YAML schema changes across versions: pin documented minimum version and keep
-  generation conservative.
-- Custom guest user `boxt` + passwordless sudo must be verified via research; if Lima
-  does not grant sudo, provisioning will use the supported cloud-init/provision path.
-- Port forwarding is optional and default-off; host-port conflict detection is done
-  before VM start.
+- The full integration suite passed on Linux/aarch64 with QEMU TCG and 512 MiB
+  guests. Without KVM, VMs are slow; larger guest memory can exceed a small
+  container's host RAM and cause QEMU to be OOM-killed.
+- macOS Apple Silicon and Fedora/Ubuntu x86_64 VM runs remain unverified here;
+  their path handling is unit-tested and all release targets cross-compile.
+- Lima YAML schema changes across versions: minimum Lima 2.0 is declared in
+  generated config and generation is kept conservative.
+- Custom guest user `boxt` works; passwordless sudo is configured by Lima and was
+  exercised by real apt provisioning.
+- Port forwarding defaults to `auto` (loopback-only dynamic forwarding, requested
+  for Vite/agent workflows). `explicit` gives deny-by-default. This is a
+  deliberate amendment to the original default-off plan.
 
 ## Progress log
 
@@ -260,12 +266,29 @@ go build ./cmd/boxt
   `--no-start`, `boxt shell`, signal handling, exit-status propagation. Interactive
   streams are inherited by `limactl shell`, which allocates the SSH PTY and handles
   window resize; non-interactive streams are piped to avoid an unwanted PTY.
-- **M4 complete** — mise installer pinned and verified, apt base dependencies,
-  idempotent per-tool reconciliation, `tool add/list/remove`, `provision`, automatic
-  provisioning in `up`, and non-interactive tool PATH via `mise exec` with configs
-  and auto-install disabled. Unit tests use a fake guest; integration test gated.
+  Non-interactive SIGINT/SIGTERM cancel the child; interactive SIGTERM cancels it.
+- **M4 complete** — mise installer version pinned, apt base dependencies,
+  idempotent per-tool reconciliation that skips satisfied tools, `tool add/list/remove`,
+  `provision`, automatic provisioning in `up`/auto-start, and non-interactive tool
+  PATH via `mise exec` with configs and auto-install disabled. An existing newer
+  mise install is accepted. Unit tests use a fake guest; integration test gated.
 - **M5 complete** — stable project ID paths, external Git worktree create/list/remove,
   dirty/force handling, stale metadata pruning, branch retention, default workspace,
   named workspace `run`/`shell`, host and gated guest integration tests. Lima's
   implicit port-forward catch-all is now controlled by `vm.port_forwarding`
   (`auto` default, `explicit` to restrict to declared ports).
+- **M6 complete** — richer `status` (actual VM resources, config drift, workspaces),
+  config fingerprints with destroy/up guidance, config write locking and symlink
+  preservation, ignored-file protection on workspace removal, atomic worktree
+  rollback, private mise installer temp file, process-group cancellation, home/root
+  mount rejection, overlapping-mount validation, project metadata discovery from
+  worktrees, cross-platform builds, CI, goreleaser packaging, example project, and
+  final documentation.
+- **Verified with real Lima/QEMU VMs** (Linux/aarch64, TCG, 512 MiB guests):
+  VM create/start/stop/delete, project and workspace mounts, guest user `boxt`,
+  persistence across restart, `boxt up` provisioning (apt + mise), `tool add node@24`,
+  node execution through `mise exec`, PTY shell in `/workspace`, guest exit status,
+  dynamic port forwarding from guest to host, workspace create/list/run/shell,
+  project discovery from inside a workspace, destroy preserving project/worktrees,
+  and full gated integration suite (`internal/lima`, `internal/toolchain`,
+  `internal/workspace`, `internal/cli`).

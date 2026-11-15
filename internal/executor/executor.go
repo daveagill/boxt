@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/boxt/boxt/internal/command"
 	"github.com/boxt/boxt/internal/lima"
 )
 
@@ -69,12 +71,13 @@ func (e *Executor) Execute(ctx context.Context, req Request) error {
 	}
 
 	streams := lima.ShellRequest{
-		Instance: VMNameFor(req.ProjectID),
-		WorkDir:  req.WorkDir,
-		Command:  argv,
-		Stdin:    e.In,
-		Stdout:   e.Out,
-		Stderr:   e.Err,
+		Instance:        VMNameFor(req.ProjectID),
+		WorkDir:         req.WorkDir,
+		Command:         argv,
+		Stdin:           e.In,
+		Stdout:          e.Out,
+		Stderr:          e.Err,
+		NewProcessGroup: !req.Interactive,
 	}
 	if !req.Interactive {
 		// Wrapping with a non-*os.File writer makes os/exec create a pipe,
@@ -84,21 +87,45 @@ func (e *Executor) Execute(ctx context.Context, req Request) error {
 		streams.Stderr = nonFileWriter{e.Err}
 	}
 
-	return runWithTerminalSignals(func() error {
-		if err := e.Guest.Shell(ctx, streams); err != nil {
-			return fmt.Errorf("%s: %w", req.Workspace, err)
+	return runWithSignals(ctx, req.Interactive, func(runCtx context.Context) error {
+		if err := e.Guest.Shell(runCtx, streams); err != nil {
+			return commandError(req.Command, err)
 		}
 		return nil
 	})
 }
 
-// runWithTerminalSignals lets the SSH child handle Ctrl-C/Ctrl-\ and SIGTERM
-// delivered to the foreground process group, instead of boxt exiting first and
-// leaving the terminal to be restored by a dying child.
-func runWithTerminalSignals(fn func() error) error {
-	signal.Ignore(os.Interrupt, syscall.SIGTERM)
-	defer signal.Reset(os.Interrupt, syscall.SIGTERM)
-	return fn()
+func commandError(argv []string, err error) error {
+	display := strings.Join(argv, " ")
+	if display == "" {
+		display = "interactive shell"
+	}
+	var cmdErr *command.Error
+	if errors.As(err, &cmdErr) {
+		return &command.Error{
+			Name:     display,
+			ExitCode: cmdErr.ExitCode,
+			Stderr:   cmdErr.Stderr,
+			Err:      cmdErr.Err,
+		}
+	}
+	return fmt.Errorf("%s: %w", display, err)
+}
+
+// runWithSignals lets an interactive SSH child own terminal signals (Ctrl-C,
+// Ctrl-\), while a direct SIGTERM cancels boxt and its child. Non-interactive
+// commands cancel on SIGINT or SIGTERM.
+func runWithSignals(ctx context.Context, interactive bool, fn func(context.Context) error) error {
+	if interactive {
+		signal.Ignore(os.Interrupt, syscall.SIGQUIT)
+		defer signal.Reset(os.Interrupt, syscall.SIGQUIT)
+		ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM)
+		defer stop()
+		return fn(ctx)
+	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return fn(ctx)
 }
 
 // nonFileWriter hides the concrete *os.File type from os/exec.

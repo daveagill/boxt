@@ -14,6 +14,7 @@ import (
 	"github.com/boxt/boxt/internal/command"
 	"github.com/boxt/boxt/internal/git"
 	"github.com/boxt/boxt/internal/lima"
+	"github.com/boxt/boxt/internal/project"
 )
 
 // DefaultName is reserved for the implicit project-root workspace.
@@ -41,6 +42,7 @@ type Workspace struct {
 	GuestPath  string
 	Default    bool
 	Missing    bool
+	Broken     bool
 	Locked     bool
 	LockReason string
 }
@@ -142,8 +144,19 @@ func (m *Manager) List(ctx context.Context) ([]Workspace, error) {
 			Locked:     raw.Locked,
 			LockReason: raw.LockReason,
 		}
-		if _, err := os.Stat(raw.Path); err != nil {
+		info, statErr := os.Stat(raw.Path)
+		switch {
+		case errors.Is(statErr, os.ErrNotExist):
 			ws.Missing = true
+			ws.Broken = false
+		case statErr != nil:
+			return nil, fmt.Errorf("inspect workspace %s: %w", raw.Path, statErr)
+		case !info.IsDir():
+			ws.Missing = false
+			ws.Broken = true
+		case raw.Prunable:
+			ws.Missing = false
+			ws.Broken = true
 		}
 		workspaces = append(workspaces, ws)
 	}
@@ -170,6 +183,9 @@ func (m *Manager) Get(ctx context.Context, name string) (Workspace, error) {
 		if ws.Name == name {
 			if ws.Missing {
 				return Workspace{}, &ErrMissing{Name: name, Path: ws.HostPath}
+			}
+			if ws.Broken {
+				return Workspace{}, &ErrBroken{Name: name, Path: ws.HostPath}
 			}
 			return ws, nil
 		}
@@ -203,6 +219,9 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (Workspace, e
 	if branch == "" {
 		branch = "boxt/" + name
 	}
+	if strings.HasPrefix(branch, "-") {
+		return Workspace{}, fmt.Errorf("invalid branch name %q: must not start with '-'", branch)
+	}
 	if _, err := m.Git.Output(ctx, root, "check-ref-format", "--branch", branch); err != nil {
 		return Workspace{}, fmt.Errorf("invalid branch name %q: %w", branch, err)
 	}
@@ -218,9 +237,22 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (Workspace, e
 		return Workspace{}, fmt.Errorf("inspect workspace path: %w", err)
 	}
 
-	// Stale worktree metadata must not block reuse of a workspace name.
-	if _, err := m.Git.Output(ctx, root, "worktree", "prune"); err != nil {
-		return Workspace{}, fmt.Errorf("prune stale worktrees: %w", err)
+	// Stale worktree metadata for this exact workspace must not block reuse of
+	// its name. Remove only that entry; never prune unrelated worktrees.
+	if list, err := m.List(ctx); err != nil {
+		return Workspace{}, err
+	} else {
+		for _, ws := range list {
+			if ws.Name != name {
+				continue
+			}
+			if !ws.Missing {
+				return Workspace{}, &ErrExists{Name: name}
+			}
+			if err := m.removeStale(ctx, root, ws.HostPath); err != nil {
+				return Workspace{}, fmt.Errorf("clean stale metadata for workspace %s: %w", name, err)
+			}
+		}
 	}
 	if list, err := m.List(ctx); err != nil {
 		return Workspace{}, err
@@ -268,10 +300,17 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (Workspace, e
 
 	top, err := m.Git.TopLevel(ctx, path)
 	if err != nil {
-		return Workspace{}, fmt.Errorf("verify workspace checkout: %w", err)
+		return m.rollbackCreated(ctx, root, path, branch, createdBranch, fmt.Errorf("verify workspace checkout: %w", err))
 	}
 	if canonicalPath(top) != canonicalPath(path) {
-		return Workspace{}, fmt.Errorf("verify workspace checkout: Git reports %s for %s", top, path)
+		return m.rollbackCreated(ctx, root, path, branch, createdBranch, fmt.Errorf("verify workspace checkout: Git reports %s for %s", top, path))
+	}
+	gitDir, err := m.Git.Output(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return m.rollbackCreated(ctx, root, path, branch, createdBranch, fmt.Errorf("locate workspace Git metadata: %w", err))
+	}
+	if err := project.WriteWorktreeMetadata(gitDir, m.ProjectRoot); err != nil {
+		return m.rollbackCreated(ctx, root, path, branch, createdBranch, fmt.Errorf("record project metadata for workspace %s: %w", name, err))
 	}
 	return Workspace{
 		Name:      name,
@@ -279,6 +318,17 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (Workspace, e
 		HostPath:  path,
 		GuestPath: m.GuestPath(name),
 	}, nil
+}
+
+func (m *Manager) rollbackCreated(ctx context.Context, root, path, branch string, createdBranch bool, cause error) (Workspace, error) {
+	_, rmErr := m.Git.Output(ctx, root, "worktree", "remove", "--force", path)
+	if createdBranch {
+		_, _ = m.Git.Output(ctx, root, "branch", "-D", branch)
+	}
+	if rmErr != nil && !isGoneWorktree(rmErr) {
+		return Workspace{}, fmt.Errorf("%w (rollback failed: %v)", cause, rmErr)
+	}
+	return Workspace{}, cause
 }
 
 // Remove deletes a named worktree. Dirty worktrees require force. Branch refs
@@ -298,22 +348,31 @@ func (m *Manager) Remove(ctx context.Context, name string, force bool) (Workspac
 	if err != nil {
 		return Workspace{}, err
 	}
-	if ws.Missing {
-		if _, err := m.Git.Output(ctx, root, "worktree", "prune"); err != nil {
-			return Workspace{}, fmt.Errorf("prune stale workspace metadata: %w", err)
-		}
-		return ws, nil
-	}
 	if ws.Locked {
 		return Workspace{}, &ErrLocked{Name: name, Path: ws.HostPath, Reason: ws.LockReason}
 	}
+	if ws.Broken {
+		return Workspace{}, &ErrBroken{Name: name, Path: ws.HostPath}
+	}
+	if ws.Missing {
+		if err := m.removeStale(ctx, root, ws.HostPath); err != nil {
+			return Workspace{}, fmt.Errorf("clean stale workspace metadata: %w", err)
+		}
+		return ws, nil
+	}
 
-	status, err := m.Git.Output(ctx, ws.HostPath, "status", "--porcelain", "--ignore-submodules=none")
+	status, err := m.Git.Output(ctx, ws.HostPath, "status", "--porcelain", "--ignored=matching", "--ignore-submodules=none")
 	if err != nil {
 		return Workspace{}, fmt.Errorf("check workspace status: %w", err)
 	}
-	if strings.TrimSpace(status) != "" && !force {
-		return Workspace{}, &ErrDirty{Name: name}
+	dirty, ignored := workspaceChanges(status)
+	if !force {
+		switch {
+		case dirty:
+			return Workspace{}, &ErrDirty{Name: name}
+		case ignored:
+			return Workspace{}, &ErrIgnoredFiles{Name: name}
+		}
 	}
 
 	args := []string{"worktree", "remove"}
@@ -323,12 +382,10 @@ func (m *Manager) Remove(ctx context.Context, name string, force bool) (Workspac
 	args = append(args, ws.HostPath)
 	if _, err := m.Git.Output(ctx, root, args...); err != nil {
 		if isGoneWorktree(err) {
-			_, _ = m.Git.Output(ctx, root, "worktree", "prune")
 			return ws, nil
 		}
 		return Workspace{}, m.mapRemoveError(name, ws.HostPath, err)
 	}
-	_, _ = m.Git.Output(ctx, root, "worktree", "prune")
 	if _, statErr := os.Stat(ws.HostPath); statErr == nil {
 		return Workspace{}, fmt.Errorf("Git removed the worktree metadata, but the directory still exists: %s\n\nboxt does not delete directories outside Git's worktree command", ws.HostPath)
 	}
@@ -354,21 +411,24 @@ func (m *Manager) find(ctx context.Context, name string) (Workspace, error) {
 			return ws, nil
 		}
 	}
-	// Prune stale metadata and retry once; this makes removal idempotent for
-	// workspaces whose directory disappeared.
-	root, rootErr := m.repoRoot(ctx)
-	if rootErr == nil {
-		_, _ = m.Git.Output(ctx, root, "worktree", "prune")
-		if list, err = m.List(ctx); err != nil {
-			return Workspace{}, err
-		}
-		for _, ws := range list {
-			if ws.Name == name {
-				return ws, nil
-			}
-		}
-	}
 	return Workspace{}, &ErrNotFound{Name: name}
+}
+
+// removeStale removes Git metadata for one missing worktree. It never prunes
+// unrelated worktrees or deletes a directory.
+func (m *Manager) removeStale(ctx context.Context, root, path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("workspace directory still exists: %s", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := m.Git.Output(ctx, root, "worktree", "remove", path); err != nil {
+		if isGoneWorktree(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) worktrees(ctx context.Context) ([]rawWorktree, error) {
@@ -464,12 +524,12 @@ func (m *Manager) mapCreateError(name, path string, err error) error {
 	if errors.As(err, &cmdErr) {
 		msg := cmdErr.Stderr
 		switch {
-		case strings.Contains(msg, "already exists"):
-			return &ErrExists{Name: name}
 		case strings.Contains(msg, "a branch named") && strings.Contains(msg, "already exists"):
 			return fmt.Errorf("the branch for workspace %s already exists; choose a different `--branch` or workspace name", name)
-		case strings.Contains(msg, "is already used by worktree"):
+		case strings.Contains(msg, "is already used by worktree"), strings.Contains(msg, "is already checked out at"):
 			return fmt.Errorf("the selected branch is already checked out in another worktree; choose a different branch")
+		case strings.Contains(msg, "already exists"):
+			return &ErrExists{Name: name}
 		}
 	}
 	return fmt.Errorf("create worktree %s: %w", path, err)
@@ -556,12 +616,37 @@ func (e *ErrMissing) Hint() string {
 	return "The Git worktree metadata is stale. Run `boxt workspace remove " + e.Name + "` to prune it."
 }
 
+// ErrBroken indicates a workspace directory or Git link that needs manual
+// repair; boxt does not delete it automatically.
+type ErrBroken struct{ Name, Path string }
+
+func (e *ErrBroken) Error() string {
+	return fmt.Sprintf("Workspace %s is broken at %s", e.Name, e.Path)
+}
+func (e *ErrBroken) Hint() string {
+	return fmt.Sprintf("Inspect %s and its .git file, or repair it with `git worktree repair %s`. boxt did not delete anything.", e.Path, e.Path)
+}
+
 // ErrDefaultWorkspace means an operation attempted to create or remove the
 // implicit default workspace.
 type ErrDefaultWorkspace struct{}
 
 func (e *ErrDefaultWorkspace) Error() string {
 	return "the default workspace is implicit and cannot be removed"
+}
+
+func workspaceChanges(status string) (dirty, ignored bool) {
+	for _, line := range strings.Split(status, "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "!!") {
+			ignored = true
+		} else {
+			dirty = true
+		}
+	}
+	return dirty, ignored
 }
 
 // ErrDirty refuses to delete uncommitted work.
@@ -572,6 +657,16 @@ func (e *ErrDirty) Error() string {
 }
 func (e *ErrDirty) Hint() string {
 	return fmt.Sprintf("Commit or stash your changes before removing it.\n\nUse `boxt workspace remove %s --force` to discard them.", e.Name)
+}
+
+// ErrIgnoredFiles refuses to delete ignored files such as .env or caches.
+type ErrIgnoredFiles struct{ Name string }
+
+func (e *ErrIgnoredFiles) Error() string {
+	return fmt.Sprintf("Cannot remove workspace %s:\nit contains ignored files that would be deleted.", e.Name)
+}
+func (e *ErrIgnoredFiles) Hint() string {
+	return fmt.Sprintf("Use `boxt workspace remove %s --force` to discard ignored files such as .env, caches or build output.", e.Name)
 }
 
 // ErrLocked refuses to remove a Git-locked worktree.

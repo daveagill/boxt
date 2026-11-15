@@ -89,10 +89,14 @@ func (c *Config) Validate() error {
 	}
 
 	seenHostPorts := map[string]int{}
+	seenGuestPorts := map[int]int{}
 	for i, p := range c.VM.Ports {
 		path := fmt.Sprintf("vm.ports[%d]", i)
 		if p.Guest < 1 || p.Guest > 65535 {
 			v.add(path+".guest", "must be between 1 and 65535")
+		}
+		if p.Guest == 22 {
+			v.add(path+".guest", "port 22 is reserved for Lima SSH")
 		}
 		if p.Host < 1 || p.Host > 65535 {
 			v.add(path+".host", "must be between 1 and 65535")
@@ -110,6 +114,13 @@ func (c *Config) Validate() error {
 				v.add(path+".host", "duplicates vm.ports[%d] host binding %s", prev, key)
 			} else {
 				seenHostPorts[key] = i
+			}
+		}
+		if p.Guest >= 1 && p.Guest <= 65535 {
+			if prev, ok := seenGuestPorts[p.Guest]; ok {
+				v.add(path+".guest", "duplicates vm.ports[%d] guest port %d", prev, p.Guest)
+			} else {
+				seenGuestPorts[p.Guest] = i
 			}
 		}
 	}
@@ -160,6 +171,9 @@ func (c *Config) Validate() error {
 	return &ValidationError{Errors: v.errs}
 }
 
+// MemoryBytes validates and converts a memory size such as 8GiB to bytes.
+func MemoryBytes(s string) (int64, error) { return parseMemory(s) }
+
 func parseMemory(s string) (int64, error) {
 	m := memoryRE.FindStringSubmatch(s)
 	if m == nil {
@@ -173,12 +187,13 @@ func parseMemory(s string) (int64, error) {
 	if m[2] == "GiB" {
 		mult = 1024 * 1024 * 1024
 	}
+	const maxBytes = int64(256) * 1024 * 1024 * 1024
+	if n > maxBytes/mult {
+		return 0, fmt.Errorf("must be at most 256GiB")
+	}
 	bytes := n * mult
 	if bytes < 512*1024*1024 {
 		return 0, fmt.Errorf("must be at least 512MiB")
-	}
-	if bytes > 256*1024*1024*1024 {
-		return 0, fmt.Errorf("must be at most 256GiB")
 	}
 	return bytes, nil
 }

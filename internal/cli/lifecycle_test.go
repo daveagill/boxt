@@ -19,6 +19,8 @@ import (
 type fakeLimaRunner struct {
 	vmName   string
 	status   string
+	cpus     int
+	memory   int64
 	commands []command.Command
 	startErr error
 	shellErr error
@@ -35,7 +37,15 @@ func (f *fakeLimaRunner) Run(ctx context.Context, c command.Command) error {
 			return nil
 		}
 		if c.Stdout != nil {
-			fmt.Fprintf(c.Stdout, `{"name":%q,"status":%q,"vmType":"qemu","arch":"aarch64","cpus":4,"memory":8589934592}`+"\n", f.vmName, f.status)
+			cpus := f.cpus
+			if cpus == 0 {
+				cpus = 4
+			}
+			memory := f.memory
+			if memory == 0 {
+				memory = 8 * 1024 * 1024 * 1024
+			}
+			fmt.Fprintf(c.Stdout, `{"name":%q,"status":%q,"vmType":"qemu","arch":"aarch64","cpus":%d,"memory":%d}`+"\n", f.vmName, f.status, cpus, memory)
 		}
 	case "start":
 		if f.startErr != nil {
@@ -150,6 +160,37 @@ func TestUpAlreadyRunning(t *testing.T) {
 	}
 }
 
+func TestUpAlreadyRunningWithExplicitPorts(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Running"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	cfg := fmt.Sprintf(`version: 1
+vm:
+  image: ubuntu-24.04
+  cpus: 4
+  memory: 8GiB
+  ports:
+    - guest: 3000
+      host: %d
+run:
+  targets: {}
+`, port)
+	if err := os.WriteFile(f.project.ConfigPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if f.startCommands() != 0 {
+		t.Fatalf("started a running VM: %#v", f.runner.commands)
+	}
+}
+
 func TestUpStartsStoppedVM(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.runner.status = "Stopped"
@@ -161,6 +202,80 @@ func TestUpStartsStoppedVM(t *testing.T) {
 	}
 	if f.startCommands() != 1 {
 		t.Fatalf("expected start, got %#v", f.runner.commands)
+	}
+}
+
+func TestUpSameConfigTwice(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("first up exit %d: %s", code, f.errOut.String())
+	}
+	f.out.Reset()
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("second up exit %d: %s", code, f.errOut.String())
+	}
+	if f.startCommands() != 1 {
+		t.Fatalf("expected one start, got %#v", f.runner.commands)
+	}
+}
+
+func TestUpDetectsConfigDrift(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("first up exit %d: %s", code, f.errOut.String())
+	}
+	f.writeConfig(t, `version: 1
+vm:
+  image: ubuntu-24.04
+  cpus: 2
+  memory: 8GiB
+run:
+  targets: {}
+`)
+	f.errOut.Reset()
+	if code := f.run(t, "up"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "different configuration") || !strings.Contains(f.errOut.String(), "boxt destroy") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+	if f.startCommands() != 1 {
+		t.Fatalf("drifted VM was restarted: %#v", f.runner.commands)
+	}
+}
+
+func TestStatusReportsConfigDrift(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("up exit %d: %s", code, f.errOut.String())
+	}
+	f.writeConfig(t, `version: 1
+vm:
+  image: ubuntu-24.04
+  cpus: 2
+  memory: 8GiB
+run:
+  targets: {}
+`)
+	f.out.Reset()
+	if code := f.run(t, "status"); code != 0 {
+		t.Fatalf("status exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "Config drift") {
+		t.Fatalf("status did not report drift:\n%s", f.out.String())
+	}
+}
+
+func TestUpWarnsAboutResourceDrift(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Running"
+	f.runner.cpus = 2
+	f.runner.memory = 4 * 1024 * 1024 * 1024
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.errOut.String(), "different resources") || !strings.Contains(f.errOut.String(), "cpus 2 -> 4") {
+		t.Fatalf("missing drift warning:\n%s", f.errOut.String())
 	}
 }
 
@@ -203,8 +318,8 @@ run:
 	if !strings.Contains(f.errOut.String(), "already in use") {
 		t.Fatalf("unexpected error: %s", f.errOut.String())
 	}
-	if len(f.runner.commands) != 0 {
-		t.Fatalf("Lima was invoked despite port conflict: %#v", f.runner.commands)
+	if f.startCommands() != 0 {
+		t.Fatalf("VM was started despite port conflict: %#v", f.runner.commands)
 	}
 }
 
@@ -365,6 +480,55 @@ func TestStatusMissingVM(t *testing.T) {
 	}
 	if !strings.Contains(f.out.String(), "none declared") {
 		t.Fatalf("missing tools line:\n%s", f.out.String())
+	}
+	if !strings.Contains(f.out.String(), "Workspaces:") || !strings.Contains(f.out.String(), "default") {
+		t.Fatalf("missing workspaces section:\n%s", f.out.String())
+	}
+}
+
+func TestStatusWithNamedWorkspace(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed: %s", f.errOut.String())
+	}
+	f.out.Reset()
+	if code := f.run(t, "status"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	for _, want := range []string{"Workspaces:", "feature-a", "boxt/feature-a", "ready"} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Fatalf("status missing %q:\n%s", want, f.out.String())
+		}
+	}
+}
+
+func TestStatusWithoutLima(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.app.LookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	if code := f.run(t, "status"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "Lima not installed") {
+		t.Fatalf("unexpected status:\n%s", f.out.String())
+	}
+	if !strings.Contains(f.out.String(), "Project:") {
+		t.Fatalf("project info missing:\n%s", f.out.String())
+	}
+}
+
+func TestStatusShowsActualVMResources(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Running"
+	f.runner.cpus = 2
+	f.runner.memory = 4 * 1024 * 1024 * 1024
+	if code := f.run(t, "status"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	for _, want := range []string{"2 CPUs, 4GiB memory", "configured: 4 CPUs, 8GiB memory"} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Fatalf("status missing %q:\n%s", want, f.out.String())
+		}
 	}
 }
 

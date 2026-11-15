@@ -42,7 +42,6 @@ func TestCheckPorts(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	defer ln.Close()
 	err = CheckPorts([]config.PortForward{
-		{Guest: 80, Host: 1, HostIP: "127.0.0.1"},
 		{Guest: 81, Host: port, HostIP: "127.0.0.1"},
 	})
 	if err == nil {

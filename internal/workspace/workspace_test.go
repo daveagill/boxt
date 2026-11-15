@@ -11,6 +11,7 @@ import (
 
 	"github.com/boxt/boxt/internal/command"
 	"github.com/boxt/boxt/internal/git"
+	"github.com/boxt/boxt/internal/project"
 )
 
 func requireGit(t *testing.T) {
@@ -209,6 +210,9 @@ func TestCreateInvalidBranch(t *testing.T) {
 	if _, err := m.Create(context.Background(), "one", "bad..branch"); err == nil {
 		t.Fatal("invalid branch accepted")
 	}
+	if _, err := m.Create(context.Background(), "two", "-option"); err == nil {
+		t.Fatal("option-like branch accepted")
+	}
 }
 
 func TestCreateNonGit(t *testing.T) {
@@ -284,6 +288,37 @@ func TestRemoveDirtyRequiresForce(t *testing.T) {
 	runGit(t, repo, "show-ref", "--verify", "refs/heads/boxt/dirty")
 }
 
+func TestRemoveIgnoredFilesRequiresForce(t *testing.T) {
+	repo := initRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "ignore env")
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "ignored", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, ".env"), []byte("SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.Remove(context.Background(), "ignored", false)
+	var ignored *ErrIgnoredFiles
+	if !errors.As(err, &ignored) {
+		t.Fatalf("expected ErrIgnoredFiles, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(ws.HostPath, ".env")); statErr != nil {
+		t.Fatal("ignored file was deleted without force")
+	}
+	if _, err := m.Remove(context.Background(), "ignored", true); err != nil {
+		t.Fatalf("forced remove: %v", err)
+	}
+	if _, err := os.Stat(ws.HostPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("forced remove left workspace")
+	}
+}
+
 func TestRemoveMissingDirectoryPrunesMetadata(t *testing.T) {
 	repo := initRepo(t)
 	m := newManager(t, repo)
@@ -333,6 +368,23 @@ func TestCreateReusesNameAfterMissingDirectory(t *testing.T) {
 	}
 	if canonicalPath(ws2.HostPath) != canonicalPath(ws.HostPath) {
 		t.Fatalf("paths differ: %q %q", ws.HostPath, ws2.HostPath)
+	}
+}
+
+func TestCreateDoesNotPruneUnrelatedStaleWorktrees(t *testing.T) {
+	repo := initRepo(t)
+	outside := filepath.Join(t.TempDir(), "unrelated")
+	runGit(t, repo, "worktree", "add", outside, "-b", "unrelated", "-q")
+	if err := os.RemoveAll(outside); err != nil {
+		t.Fatal(err)
+	}
+	m := newManager(t, repo)
+	if _, err := m.Create(context.Background(), "one", ""); err != nil {
+		t.Fatal(err)
+	}
+	listed := runGit(t, repo, "worktree", "list", "--porcelain")
+	if !strings.Contains(listed, outside) {
+		t.Fatalf("unrelated stale worktree metadata was pruned:\n%s", listed)
 	}
 }
 
@@ -438,5 +490,82 @@ func TestGetMissingWorkspace(t *testing.T) {
 	var missing *ErrMissing
 	if !errors.As(err, &missing) {
 		t.Fatalf("expected ErrMissing, got %v", err)
+	}
+}
+
+func TestMapCreateError(t *testing.T) {
+	m := New("/repo", "abc", "/data", git.New(command.ExecRunner{}))
+	tests := []struct {
+		stderr string
+		want   string
+	}{
+		{"fatal: a branch named 'x' already exists", "branch for workspace one already exists"},
+		{"fatal: 'x' is already used by worktree at '/w'", "already checked out"},
+		{"fatal: 'x' is already checked out at '/w'", "already checked out"},
+		{"fatal: '/path' already exists", "Workspace already exists"},
+	}
+	for _, tt := range tests {
+		err := m.mapCreateError("one", "/path", &command.Error{Stderr: tt.stderr})
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("stderr %q: got %v, want %q", tt.stderr, err, tt.want)
+		}
+	}
+}
+
+func TestProjectLookupFromWorkspace(t *testing.T) {
+	repo := initRepo(t)
+	if _, err := project.Init(repo); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "boxt config")
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(ws.HostPath, ".boxt", "config.yaml")); err != nil {
+		t.Fatalf("tracked config missing from worktree: %v", err)
+	}
+	got, err := project.Lookup(ws.HostPath)
+	if err != nil {
+		t.Fatalf("Lookup from workspace: %v", err)
+	}
+	if got.Root != canonicalPath(repo) {
+		t.Fatalf("project root = %q, want %q", got.Root, canonicalPath(repo))
+	}
+	if got.ID != project.IDForRoot(canonicalPath(repo)) {
+		t.Fatalf("project ID = %q", got.ID)
+	}
+	nested := filepath.Join(ws.HostPath, "src")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err = project.Lookup(nested)
+	if err != nil {
+		t.Fatalf("Lookup from nested workspace path: %v", err)
+	}
+	if got.Root != canonicalPath(repo) {
+		t.Fatalf("nested lookup root = %q", got.Root)
+	}
+	gitDir := runGit(t, ws.HostPath, "rev-parse", "--absolute-git-dir")
+	data, err := os.ReadFile(filepath.Join(gitDir, project.WorktreeMetadataFile))
+	if err != nil {
+		t.Fatalf("worktree metadata missing: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != canonicalPath(repo) {
+		t.Fatalf("metadata = %q", data)
+	}
+
+	nestedProject := filepath.Join(ws.HostPath, "nested-project")
+	if _, err := project.Init(nestedProject); err != nil {
+		t.Fatal(err)
+	}
+	got, err = project.Lookup(nestedProject)
+	if err != nil {
+		t.Fatalf("Lookup nested project inside workspace: %v", err)
+	}
+	if got.Root != nestedProject {
+		t.Fatalf("nested lookup = %q, want %q", got.Root, nestedProject)
 	}
 }

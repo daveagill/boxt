@@ -157,12 +157,12 @@ func TestHelp(t *testing.T) {
 }
 
 func TestUnknownCommand(t *testing.T) {
-	app, _, errOut := testApp(t, t.TempDir())
-	if code := Run(context.Background(), app, []string{"nope"}); code != 1 {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "nope"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(errOut.String(), "unknown command") {
-		t.Fatalf("unexpected error: %s", errOut.String())
+	if !strings.Contains(f.errOut.String(), "unknown run target: nope") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
 	}
 }
 
@@ -180,6 +180,44 @@ func TestPrintErrorHint(t *testing.T) {
 	PrintError(&b, &hintedError{})
 	if !strings.Contains(b.String(), "Error: boom") || !strings.Contains(b.String(), "do this") {
 		t.Fatalf("unexpected output: %s", b.String())
+	}
+}
+
+func TestDefaultConfirm(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"yes\n", true},
+		{"YES\n", true},
+		{" yes \n", true},
+		{"y\n", false},
+		{"no\n", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		var b bytes.Buffer
+		confirm := defaultConfirm(strings.NewReader(tt.input), &b)
+		got, err := confirm("Confirm: ")
+		if err != nil {
+			t.Fatalf("input %q: %v", tt.input, err)
+		}
+		if got != tt.want {
+			t.Errorf("input %q: got %v, want %v", tt.input, got, tt.want)
+		}
+		if !strings.Contains(b.String(), "Confirm: ") {
+			t.Errorf("prompt not written for %q", tt.input)
+		}
+	}
+
+	file, err := os.CreateTemp(t.TempDir(), "stdin-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	confirm := defaultConfirm(file, &bytes.Buffer{})
+	if _, err := confirm("Confirm: "); err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("expected non-TTY error, got %v", err)
 	}
 }
 

@@ -148,3 +148,17 @@ func EnsureDir(path string, perm os.FileMode) error {
 	}
 	return nil
 }
+
+// VirtualizationWarning returns a non-fatal diagnostic when Linux hardware
+// acceleration is unavailable. Lima can still run with software emulation.
+func VirtualizationWarning(goos string) string {
+	if goos != "linux" {
+		return ""
+	}
+	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
+	if err != nil {
+		return "/dev/kvm is not available; the VM may run slowly without hardware acceleration."
+	}
+	_ = f.Close()
+	return ""
+}

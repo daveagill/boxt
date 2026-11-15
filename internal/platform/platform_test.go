@@ -2,6 +2,7 @@ package platform
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -100,5 +101,19 @@ func TestUnsupportedError(t *testing.T) {
 	err := &UnsupportedError{OS: "plan9", Arch: "mips"}
 	if !strings.Contains(err.Error(), "plan9/mips") {
 		t.Fatalf("unexpected message %q", err.Error())
+	}
+}
+
+func TestVirtualizationWarning(t *testing.T) {
+	if got := VirtualizationWarning("darwin"); got != "" {
+		t.Fatalf("macOS warning = %q", got)
+	}
+	_, err := os.Stat("/dev/kvm")
+	got := VirtualizationWarning("linux")
+	if err != nil && got == "" {
+		t.Fatal("expected warning without /dev/kvm")
+	}
+	if err == nil && got != "" {
+		t.Fatalf("unexpected warning with /dev/kvm: %q", got)
 	}
 }

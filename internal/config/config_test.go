@@ -2,10 +2,12 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -49,10 +51,13 @@ func TestParseValidationErrors(t *testing.T) {
 		{"too many cpus", "version: 1\nvm:\n  cpus: 65\n", "vm.cpus", "between 1 and 64"},
 		{"bad memory unit", "version: 1\nvm:\n  memory: 8GB\n", "vm.memory", "512MiB or 8GiB"},
 		{"too little memory", "version: 1\nvm:\n  memory: 100MiB\n", "vm.memory", "at least 512MiB"},
+		{"overflowing memory", "version: 1\nvm:\n  memory: 17179869185GiB\n", "vm.memory", "at most 256GiB"},
 		{"bad guest port", "version: 1\nvm:\n  ports:\n    - guest: 0\n      host: 3000\n", "vm.ports[0].guest", "1 and 65535"},
 		{"bad host ip", "version: 1\nvm:\n  ports:\n    - guest: 80\n      host: 8080\n      host_ip: nope\n", "vm.ports[0].host_ip", "invalid IP"},
 		{"bad port forwarding mode", "version: 1\nvm:\n  port_forwarding: sometimes\n", "vm.port_forwarding", "must be"},
 		{"duplicate host binding", "version: 1\nvm:\n  ports:\n    - guest: 80\n      host: 8080\n    - guest: 81\n      host: 8080\n", "vm.ports[1].host", "duplicates"},
+		{"guest port 22", "version: 1\nvm:\n  ports:\n    - guest: 22\n      host: 2222\n", "vm.ports[0].guest", "reserved"},
+		{"duplicate guest port", "version: 1\nvm:\n  ports:\n    - guest: 3000\n      host: 3000\n    - guest: 3000\n      host: 3001\n", "vm.ports[1].guest", "duplicates"},
 		{"bad tool name", "version: 1\ntools:\n  Node: \"24\"\n", "tools.Node", "invalid tool name"},
 		{"bad tool version", "version: 1\ntools:\n  node: \"24/1\"\n", "tools.node", "invalid version"},
 		{"empty command", "version: 1\nrun:\n  targets:\n    dev:\n      command: []\n", "run.targets.dev.command", "at least one"},
@@ -280,5 +285,65 @@ func TestMarshalRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, cfg) {
 		t.Fatalf("round trip mismatch:\n got %#v\nwant %#v\n%s", got, cfg, data)
+	}
+}
+
+func TestAddToolThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-config.yaml")
+	if err := Create(target); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "config.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := AddTool(link, "node", "24"); err != nil {
+		t.Fatalf("AddTool: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("configuration symlink was replaced")
+	}
+	cfg, err := Load(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Tools["node"] != "24" {
+		t.Fatalf("target not updated: %#v", cfg.Tools)
+	}
+}
+
+func TestConcurrentAddTool(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Create(path); err != nil {
+		t.Fatal(err)
+	}
+	const n = 20
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- AddTool(path, fmt.Sprintf("tool%d", i), "1")
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent AddTool: %v", err)
+		}
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Tools) != n {
+		t.Fatalf("tools = %d, want %d: %#v", len(cfg.Tools), n, cfg.Tools)
 	}
 }

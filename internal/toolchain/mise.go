@@ -21,8 +21,8 @@ const (
 	MiseVersion = "v2026.11.8"
 	// MiseInstallURL is the official mise installer endpoint.
 	MiseInstallURL = "https://mise.run"
-	// MiseInstallerPath is the downloaded installer path inside the guest.
-	MiseInstallerPath = "/tmp/boxt-mise-install.sh"
+	// miseInstallerTemplate is passed to mktemp for a private installer file.
+	miseInstallerTemplate = "/tmp/boxt-mise-install.XXXXXX"
 )
 
 var basePackages = []string{"curl", "ca-certificates", "git", "tar", "xz-utils", "unzip"}
@@ -168,13 +168,24 @@ func (m *Manager) EnsureMise(ctx context.Context, p *project.Project) (string, e
 			return v, nil
 		}
 	}
+	pathOut, err := m.run(ctx, p, lima.GuestUserHome, []string{"mktemp", miseInstallerTemplate})
+	if err != nil {
+		return "", fmt.Errorf("create mise installer file: %w", err)
+	}
+	installerPath := strings.TrimSpace(pathOut)
+	if strings.ContainsAny(installerPath, "\r\n") || !strings.HasPrefix(installerPath, "/tmp/boxt-mise-install.") {
+		return "", fmt.Errorf("create mise installer file: unexpected mktemp output %q", installerPath)
+	}
+	defer func() {
+		_, _ = m.run(ctx, p, lima.GuestUserHome, []string{"rm", "-f", installerPath})
+	}()
 	if _, err := m.run(ctx, p, lima.GuestUserHome, []string{
-		"curl", "-fsSL", "-o", MiseInstallerPath, MiseInstallURL,
+		"curl", "-fsSL", "-o", installerPath, MiseInstallURL,
 	}); err != nil {
 		return "", fmt.Errorf("download mise installer: %w", err)
 	}
 	if _, err := m.run(ctx, p, lima.GuestUserHome, []string{
-		"env", "MISE_VERSION=" + MiseVersion, "sh", MiseInstallerPath,
+		"env", "MISE_VERSION=" + MiseVersion, "sh", installerPath,
 	}); err != nil {
 		return "", fmt.Errorf("install mise: %w", err)
 	}
@@ -192,16 +203,30 @@ func (m *Manager) EnsureMise(ctx context.Context, p *project.Project) (string, e
 func parseMiseVersion(out string) string {
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
-		for i, f := range fields {
-			if f == "mise" && i+1 < len(fields) {
-				return fields[i+1]
-			}
+		if len(fields) == 0 {
+			continue
 		}
-		if strings.HasPrefix(line, "mise ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "mise "))
+		if fields[0] == "mise" && len(fields) > 1 {
+			return fields[1]
+		}
+		if looksLikeVersion(fields[0]) {
+			return fields[0]
 		}
 	}
 	return ""
+}
+
+func looksLikeVersion(s string) bool {
+	s = strings.TrimPrefix(s, "v")
+	if s == "" || s[0] < '0' || s[0] > '9' {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && r != '.' && r != '-' && r != '+' {
+			return false
+		}
+	}
+	return true
 }
 
 // installSpec installs one exact tool declaration.
@@ -221,6 +246,14 @@ func (m *Manager) Install(ctx context.Context, p *project.Project, name, version
 	}
 	if _, err := m.EnsureMise(ctx, p); err != nil {
 		return "", err
+	}
+	if version != "latest" {
+		if data, err := m.queryInstalled(ctx, p); err == nil {
+			status := statusFor(ToolStatus{Name: name, Declared: version}, data[name])
+			if status.State == StateInstalled {
+				return status.Installed, nil
+			}
+		}
 	}
 	if err := m.installSpec(ctx, p, name, version); err != nil {
 		return "", err
@@ -272,6 +305,13 @@ func parseMiseLS(raw string) (map[string][]miseEntry, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return map[string][]miseEntry{}, nil
+	}
+	// Some mise versions may print a warning before the JSON document.
+	if start := strings.Index(raw, "{"); start > 0 {
+		raw = raw[start:]
+	}
+	if end := strings.LastIndex(raw, "}"); end >= 0 && end+1 < len(raw) {
+		raw = raw[:end+1]
 	}
 	var data map[string][]miseEntry
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {

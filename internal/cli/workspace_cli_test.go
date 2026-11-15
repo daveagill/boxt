@@ -419,3 +419,27 @@ func TestWorkspaceRunNonGitNamed(t *testing.T) {
 		t.Fatalf("unexpected error: %s", f.errOut.String())
 	}
 }
+
+func TestCommandsWorkFromInsideWorkspace(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed: %s", f.errOut.String())
+	}
+	wsPath := filepath.Join(f.workspaceHostRoot(), "feature-a")
+	f.app.Getwd = func() (string, error) { return wsPath, nil }
+	f.out.Reset()
+	if code := f.run(t, "workspace", "path", "feature-a"); code != 0 {
+		t.Fatalf("path exit %d: %s", code, f.errOut.String())
+	}
+	if strings.TrimSpace(f.out.String()) != wsPath {
+		t.Fatalf("path = %q, want %q", f.out.String(), wsPath)
+	}
+	f.out.Reset()
+	if code := f.run(t, "status"); code != 0 {
+		t.Fatalf("status exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), f.project.Root) || !strings.Contains(f.out.String(), f.project.VMName()) {
+		t.Fatalf("status from workspace did not resolve project:\n%s", f.out.String())
+	}
+}

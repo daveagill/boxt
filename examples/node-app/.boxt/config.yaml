@@ -1,0 +1,25 @@
+version: 1
+
+vm:
+  image: ubuntu-24.04
+  cpus: 4
+  memory: 8GiB
+  port_forwarding: auto
+
+tools:
+  node: "24"
+  codex: latest
+
+run:
+  default: dev
+  targets:
+    dev:
+      command: ["npm", "run", "dev"]
+    test:
+      command: ["npm", "test"]
+    node:
+      command: ["node"]
+      interactive: true
+    codex:
+      command: ["codex"]
+      interactive: true

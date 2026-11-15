@@ -47,16 +47,28 @@ func (a *App) run(ctx context.Context, args []string, dash int, noStart bool) er
 	if err != nil {
 		return err
 	}
+	return a.execute(ctx, p, "default", lima.GuestProjectPath, inv, !noStart)
+}
+
+// execute is the single CLI path that starts the VM when allowed and runs a
+// request through the shared executor.
+func (a *App) execute(ctx context.Context, p *project.Project, workspace, workDir string, inv invocation, allowStart bool) error {
+	if inv.Interactive && !isTerminal(a.Out) {
+		fmt.Fprintln(a.Err, "Warning: interactive target requested, but stdout is not a terminal; the guest will not receive a PTY.")
+	}
 	if err := a.requireLima(); err != nil {
 		return err
 	}
-	if err := a.ensureVMForExecution(ctx, p, !noStart); err != nil {
+	paths, err := a.pathsFor(p)
+	if err != nil {
 		return err
 	}
-	return a.execute(ctx, p, "default", lima.GuestProjectPath, inv)
-}
-
-func (a *App) execute(ctx context.Context, p *project.Project, workspace, workDir string, inv invocation) error {
+	if err := a.checkConfigDrift(p, paths); err != nil {
+		return err
+	}
+	if err := a.ensureVMForExecution(ctx, p, allowStart); err != nil {
+		return err
+	}
 	ex := a.executorFor(p)
 	return ex.Execute(ctx, executor.Request{
 		ProjectID:   p.ID,
@@ -102,13 +114,7 @@ func (a *App) shell(ctx context.Context, noStart bool) error {
 	if err != nil {
 		return err
 	}
-	if err := a.requireLima(); err != nil {
-		return err
-	}
-	if err := a.ensureVMForExecution(ctx, p, !noStart); err != nil {
-		return err
-	}
-	return a.execute(ctx, p, "default", lima.GuestProjectPath, a.shellInvocation(p))
+	return a.execute(ctx, p, "default", lima.GuestProjectPath, a.shellInvocation(p), !noStart)
 }
 
 // shellInvocation returns an empty command for a plain guest login shell, or
@@ -139,7 +145,7 @@ func resolveRun(cfg *config.Config, args []string, dash int, terminal bool, comm
 	switch len(args) {
 	case 0:
 		if cfg.Run.Default == "" {
-			return invocation{}, &noDefaultTargetError{}
+			return invocation{}, &noDefaultTargetError{CommandPrefix: commandPrefix}
 		}
 		target, ok := cfg.ResolveTarget(cfg.Run.Default)
 		if !ok {
@@ -162,9 +168,13 @@ func resolveRun(cfg *config.Config, args []string, dash int, terminal bool, comm
 			Interactive: target.Interactive,
 		}, nil
 	default:
+		prefix := commandPrefix
+		if prefix == "" {
+			prefix = "boxt run"
+		}
 		return invocation{}, fmt.Errorf(
-			"unexpected arguments: %v\n\nUse `boxt run <target>` for a named target, or `boxt run -- <command> [args...]` for an arbitrary command",
-			args[1:],
+			"unexpected arguments: %v\n\nUse `%s <target>` for a named target, or `%s -- <command> [args...]` for an arbitrary command",
+			args[1:], prefix, prefix,
 		)
 	}
 }
@@ -187,11 +197,17 @@ func (e *unknownTargetError) Hint() string {
 	)
 }
 
-type noDefaultTargetError struct{}
+type noDefaultTargetError struct {
+	CommandPrefix string
+}
 
 func (e *noDefaultTargetError) Error() string { return "no default run target configured" }
 func (e *noDefaultTargetError) Hint() string {
-	return "Set run.default in .boxt/config.yaml, or invoke a target with `boxt run <target>`."
+	prefix := e.CommandPrefix
+	if prefix == "" {
+		prefix = "boxt run"
+	}
+	return fmt.Sprintf("Set run.default in .boxt/config.yaml, or invoke a target with `%s <target>`.", prefix)
 }
 
 func (a *App) interactiveTerminal() bool {

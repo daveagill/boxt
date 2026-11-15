@@ -1,9 +1,11 @@
 package lima
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
+	"syscall"
 
 	"github.com/boxt/boxt/internal/config"
 )
@@ -24,6 +26,9 @@ func (e *PortConflictError) Unwrap() error { return e.Cause }
 
 // Hint explains how to resolve the conflict.
 func (e *PortConflictError) Hint() string {
+	if errors.Is(e.Cause, syscall.EACCES) {
+		return fmt.Sprintf("Host port %d requires elevated permissions.\n\nChoose an unprivileged port (1024 or higher).", e.Port)
+	}
 	return fmt.Sprintf("Host port %d is already in use.\n\nChoose another port or stop the process using that port.", e.Port)
 }
 
@@ -38,7 +43,8 @@ func CheckPortAvailable(hostIP string, port int) error {
 	if err != nil {
 		return &PortConflictError{HostIP: hostIP, Port: port, Cause: err}
 	}
-	return ln.Close()
+	_ = ln.Close()
+	return nil
 }
 
 // CheckPorts verifies every requested forward before the VM is started.

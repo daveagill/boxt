@@ -49,6 +49,9 @@ func (a *App) provision(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("provisioning failed: %w", err)
 	}
+	if report == nil {
+		return errors.New("provisioning returned no report")
+	}
 	fmt.Fprintf(a.Out, "Provisioning complete (mise %s).\n", report.MiseVersion)
 	return nil
 }

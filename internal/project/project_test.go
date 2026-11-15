@@ -215,3 +215,68 @@ func TestIsNotInitializedOtherError(t *testing.T) {
 		t.Fatal("unrelated error classified as uninitialized")
 	}
 }
+
+func TestRejectsHomeAndAncestors(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	for _, root := range []string{home, base, "/"} {
+		_, err := Init(root)
+		var unsafe *ErrUnsafeProjectRoot
+		if !errors.As(err, &unsafe) {
+			t.Fatalf("Init(%q) = %v, want ErrUnsafeProjectRoot", root, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ConfigRelPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("unsafe init created configuration")
+	}
+
+	inside := filepath.Join(home, "projects", "app")
+	if _, err := Init(inside); err != nil {
+		t.Fatalf("Init inside home: %v", err)
+	}
+	if _, err := Lookup(inside); err != nil {
+		t.Fatalf("Lookup inside home: %v", err)
+	}
+}
+
+func TestLookupRejectsHomeConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgPath := filepath.Join(home, ConfigRelPath)
+	if err := config.Create(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Lookup(home)
+	var unsafe *ErrUnsafeProjectRoot
+	if !errors.As(err, &unsafe) {
+		t.Fatalf("Lookup(home) = %v, want ErrUnsafeProjectRoot", err)
+	}
+}
+
+func TestLookupRejectsUnmanagedWorktree(t *testing.T) {
+	base := t.TempDir()
+	worktree := filepath.Join(base, "manual-worktree")
+	gitDir := filepath.Join(base, "repo", ".git", "worktrees", "manual-worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Create(filepath.Join(worktree, ConfigRelPath)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Lookup(worktree)
+	var unmanaged *ErrUnmanagedWorktree
+	if !errors.As(err, &unmanaged) {
+		t.Fatalf("Lookup(manual worktree) = %v, want ErrUnmanagedWorktree", err)
+	}
+}

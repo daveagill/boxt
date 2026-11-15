@@ -69,12 +69,15 @@ func (f *fakeGuest) Shell(ctx context.Context, req lima.ShellRequest) error {
 		}
 		_, _ = io.WriteString(req.Stdout, "mise 2026.11.8 linux-arm64 (2026-11-13)\n")
 		return nil
+	case strings.Contains(joined, "mktemp "):
+		_, _ = io.WriteString(req.Stdout, "/tmp/boxt-mise-install.test\n")
+		return nil
 	case strings.Contains(joined, "curl -fsSL -o"):
 		if f.downloadFail {
 			return fail("download failed")
 		}
 		return nil
-	case strings.Contains(joined, "sh /tmp/boxt-mise-install.sh"):
+	case strings.Contains(joined, "sh /tmp/boxt-mise-install"):
 		f.miseInstalled = true
 		return nil
 	case strings.Contains(joined, "mise install "):
@@ -155,6 +158,7 @@ func TestParseMiseVersion(t *testing.T) {
 	tests := map[string]string{
 		"mise 2026.11.8 linux-arm64 (2026-11-13)\n": "2026.11.8",
 		"mise v2024.1.0\n":                          "v2024.1.0",
+		"2026.11.8 linux-arm64 (2026-11-13)\n":      "2026.11.8",
 		"weird\n":                                   "",
 	}
 	for in, want := range tests {
@@ -243,7 +247,7 @@ func TestProvisionFreshVM(t *testing.T) {
 		t.Fatalf("provisioning incomplete: deps=%v mise=%v", g.depsReady, g.miseInstalled)
 	}
 	joined := allCommands(g)
-	for _, want := range []string{"apt-get update", "apt-get install", "curl -fsSL -o", "sh /tmp/boxt-mise-install.sh", "mise install node@24", "mise install python@3.13", "mise exec"} {
+	for _, want := range []string{"apt-get update", "apt-get install", "mktemp ", "curl -fsSL -o", "sh /tmp/boxt-mise-install", "mise install node@24", "mise install python@3.13", "mise exec"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("commands missing %q:\n%s", want, joined)
 		}
@@ -309,8 +313,43 @@ func TestProvisionIdempotent(t *testing.T) {
 	if strings.Contains(joined, "apt-get") || strings.Contains(joined, "boxt-mise-install") {
 		t.Fatalf("second provision repeated setup:\n%s", joined)
 	}
-	if !strings.Contains(joined, "mise install node@24") {
-		t.Fatalf("expected idempotent install check:\n%s", joined)
+	if strings.Contains(joined, "mise install node@24") {
+		t.Fatalf("second provision reinstalled a satisfied tool:\n%s", joined)
+	}
+}
+
+func TestProvisionSkipsSatisfiedTools(t *testing.T) {
+	g := newFakeGuest()
+	g.depsReady = true
+	g.miseInstalled = true
+	g.tools["node"] = fakeTool{Requested: "24", Version: "24.22.3"}
+	p := testProject(map[string]string{"node": "24"})
+	report, err := New(g).Provision(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Tools) != 1 || report.Tools[0].Installed != "24.22.3" {
+		t.Fatalf("report = %#v", report)
+	}
+	if joined := allCommands(g); strings.Contains(joined, "mise install") {
+		t.Fatalf("satisfied tool was reinstalled:\n%s", joined)
+	}
+}
+
+func TestInstallSkipsSatisfiedVersion(t *testing.T) {
+	g := newFakeGuest()
+	g.depsReady = true
+	g.miseInstalled = true
+	g.tools["node"] = fakeTool{Requested: "24", Version: "24.22.3"}
+	version, err := New(g).Install(context.Background(), testProject(nil), "node", "24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != "24.22.3" {
+		t.Fatalf("version = %q", version)
+	}
+	if joined := allCommands(g); strings.Contains(joined, "mise install") {
+		t.Fatalf("satisfied tool was reinstalled:\n%s", joined)
 	}
 }
 

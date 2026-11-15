@@ -17,6 +17,33 @@ import (
 	"github.com/boxt/boxt/internal/lima"
 )
 
+func integrationMemory() string {
+	if v := os.Getenv("BOXT_INTEGRATION_MEMORY"); v != "" {
+		return v
+	}
+	return "2GiB"
+}
+
+func limaTempRoot() string {
+	if root := os.Getenv("BOXT_INTEGRATION_LIMA_ROOT"); root != "" {
+		return root
+	}
+	return "/tmp"
+}
+
+func shortLimaHome(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(limaTempRoot(), "lh-")
+	if err != nil {
+		dir, err = os.MkdirTemp("", "lh-")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestIntegrationWorkspaceVisibleOnHostAndGuest(t *testing.T) {
 	if os.Getenv("BOXT_INTEGRATION") != "1" {
 		t.Skip("set BOXT_INTEGRATION=1 to run Lima integration tests")
@@ -29,7 +56,7 @@ func TestIntegrationWorkspaceVisibleOnHostAndGuest(t *testing.T) {
 			t.Skip("limactl not installed")
 		}
 	}
-	t.Setenv("LIMA_HOME", t.TempDir())
+	t.Setenv("LIMA_HOME", shortLimaHome(t))
 	client := &lima.Client{Bin: bin, Runner: command.ExecRunner{}}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
@@ -52,9 +79,9 @@ func TestIntegrationWorkspaceVisibleOnHostAndGuest(t *testing.T) {
 	yamlData, err := lima.GenerateConfig(lima.VMOptions{
 		ProjectID:     "0123456789abcdef",
 		ProjectRoot:   repo,
-		WorkspacesDir: filepath.Dir(hostRoot),
+		WorkspacesDir: hostRoot,
 		CPUs:          2,
-		Memory:        "2GiB",
+		Memory:        integrationMemory(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +117,9 @@ func TestIntegrationWorkspaceVisibleOnHostAndGuest(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertGuestFile(t, ctx, client, name, ws.GuestPath+"/from-host.txt", "visible")
+	if err := os.Remove(filepath.Join(ws.HostPath, "from-host.txt")); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := m.Remove(ctx, "feature-a", false); err != nil {
 		t.Fatalf("Remove: %v", err)

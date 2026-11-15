@@ -260,6 +260,33 @@ func TestToolListLimaMissing(t *testing.T) {
 	}
 }
 
+func TestToolListMissingVM(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if err := config.AddTool(f.project.ConfigPath, "node", "24"); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "tool", "list"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "VM not created") {
+		t.Fatalf("unexpected output: %s", f.out.String())
+	}
+}
+
+func TestToolListBrokenVM(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Broken"
+	if err := config.AddTool(f.project.ConfigPath, "node", "24"); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "tool", "list"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "VM broken") {
+		t.Fatalf("unexpected output: %s", f.out.String())
+	}
+}
+
 func TestProvisionCommand(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.runner.status = "Stopped"
@@ -306,9 +333,9 @@ func TestUpRunsProvisionHook(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.runner.status = "Running"
 	called := false
-	f.app.Provision = func(ctx context.Context, p *project.Project) error {
+	f.app.Provision = func(ctx context.Context, p *project.Project) (*toolchain.Report, error) {
 		called = true
-		return nil
+		return &toolchain.Report{}, nil
 	}
 	if code := f.run(t, "up"); code != 0 {
 		t.Fatalf("exit %d: %s", code, f.errOut.String())
@@ -324,8 +351,8 @@ func TestUpRunsProvisionHook(t *testing.T) {
 func TestUpProvisionFailureReported(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.runner.status = "Running"
-	f.app.Provision = func(ctx context.Context, p *project.Project) error {
-		return errors.New("mise failed")
+	f.app.Provision = func(ctx context.Context, p *project.Project) (*toolchain.Report, error) {
+		return &toolchain.Report{Tools: []toolchain.ToolResult{{Name: "node", Declared: "24", Err: errors.New("mise failed")}}}, errors.New("mise failed")
 	}
 	if code := f.run(t, "up"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)

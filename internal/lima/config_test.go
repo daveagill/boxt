@@ -38,6 +38,7 @@ func TestGenerateConfig(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
+		"minimumLimaVersion: 2.0.0",
 		"cpus: 4",
 		"memory: 8GiB",
 		"name: boxt",
@@ -49,6 +50,7 @@ func TestGenerateConfig(t *testing.T) {
 		"arch: aarch64",
 		"system: false",
 		"user: false",
+		"propagateProxyEnv: false",
 		"guestPort: 3000",
 		"hostPort: 15432",
 		"hostIP: 0.0.0.0",
@@ -129,6 +131,20 @@ func TestGenerateConfigInvalid(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigRejectsOverlappingMounts(t *testing.T) {
+	base := t.TempDir()
+	opts := VMOptions{
+		ProjectID:     "0123456789abcdef",
+		ProjectRoot:   filepath.Join(base, "project"),
+		WorkspacesDir: filepath.Join(base, "project", "data", "workspaces"),
+		CPUs:          2,
+		Memory:        "2GiB",
+	}
+	if _, err := GenerateConfig(opts); err == nil || !strings.Contains(err.Error(), "outside the project root") {
+		t.Fatalf("expected overlapping-mount error, got %v", err)
+	}
+}
+
 func TestWriteConfig(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte("images: []\n")
@@ -180,27 +196,33 @@ func TestGeneratedConfigPassesLimactlValidate(t *testing.T) {
 	if _, err := os.Stat(limactl); err != nil {
 		t.Skipf("BOXT_LIMACTL not usable: %v", err)
 	}
-	opts := testOptions(t)
-	if err := os.MkdirAll(opts.ProjectRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(opts.WorkspacesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	data, err := GenerateConfig(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "lima.yaml")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out, err := command.Output(t.Context(), command.ExecRunner{}, command.Command{
-		Name: limactl,
-		Args: []string{"validate", path},
-	})
-	if err != nil {
-		t.Fatalf("limactl validate failed: %v\n%s\n%s", err, out, data)
+	for _, mode := range []string{config.PortForwardingAuto, config.PortForwardingExplicit} {
+		t.Run(mode, func(t *testing.T) {
+			opts := testOptions(t)
+			opts.PortForwarding = mode
+			opts.Ports = []config.PortForward{{Guest: 3000, Host: 3000}}
+			if err := os.MkdirAll(opts.ProjectRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(opts.WorkspacesDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			data, err := GenerateConfig(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "lima.yaml")
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out, err := command.Output(t.Context(), command.ExecRunner{}, command.Command{
+				Name: limactl,
+				Args: []string{"validate", path},
+			})
+			if err != nil {
+				t.Fatalf("limactl validate failed: %v\n%s\n%s", err, out, data)
+			}
+		})
 	}
 }
 

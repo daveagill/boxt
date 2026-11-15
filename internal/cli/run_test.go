@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/boxt/boxt/internal/command"
 	"github.com/boxt/boxt/internal/config"
+	"github.com/boxt/boxt/internal/project"
+	"github.com/boxt/boxt/internal/toolchain"
 )
 
 func (f *lifecycleFixture) writeConfig(t *testing.T, body string) {
@@ -83,6 +87,30 @@ func TestRootCommandRunsDefaultTarget(t *testing.T) {
 	}
 	if !endsWith(f.shellCommand(t).Args, []string{"--", "npm", "run", "dev"}) {
 		t.Fatalf("root did not run default target: %#v", f.runner.commands)
+	}
+}
+
+func TestRootCommandRunsNamedTarget(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !endsWith(f.shellCommand(t).Args, []string{"--", "npm", "test"}) {
+		t.Fatalf("root did not run named target: %#v", f.runner.commands)
+	}
+}
+
+func TestRootCommandArbitraryAfterDash(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "--", "echo", "hi"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !endsWith(f.shellCommand(t).Args, []string{"--", "echo", "hi"}) {
+		t.Fatalf("root did not run arbitrary command: %#v", f.runner.commands)
 	}
 }
 
@@ -188,6 +216,104 @@ func TestRunAutoStartsStoppedVM(t *testing.T) {
 	}
 }
 
+func TestRunAutoStartProvisionsDeferredTools(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Stopped"
+	called := false
+	f.app.Provision = func(ctx context.Context, p *project.Project) (*toolchain.Report, error) {
+		called = true
+		return &toolchain.Report{MiseVersion: "2026.11.8"}, nil
+	}
+	if code := f.run(t, "run", "test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !called {
+		t.Fatal("auto-start did not provision the toolchain")
+	}
+	if !strings.Contains(f.errOut.String(), "Provisioning toolchain") {
+		t.Fatalf("missing provisioning note: %s", f.errOut.String())
+	}
+}
+
+func TestRunAutoStartProvisionFailure(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Stopped"
+	f.app.Provision = func(ctx context.Context, p *project.Project) (*toolchain.Report, error) {
+		return &toolchain.Report{Tools: []toolchain.ToolResult{{Name: "node", Declared: "24", Err: errors.New("offline")}}}, errors.New("offline")
+	}
+	if code := f.run(t, "run", "test"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if f.countCommands("shell") != 0 {
+		t.Fatal("command ran after failed provisioning")
+	}
+	if !strings.Contains(f.errOut.String(), "provisioning failed") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestRunAutoStartRefusesConfigDrift(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("up exit %d: %s", code, f.errOut.String())
+	}
+	f.writeConfig(t, `version: 1
+vm:
+  image: ubuntu-24.04
+  cpus: 2
+  memory: 8GiB
+run:
+  default: dev
+  targets:
+    dev:
+      command: ["npm", "run", "dev"]
+`)
+	f.runner.status = "Stopped"
+	f.runner.commands = nil
+	f.errOut.Reset()
+	if code := f.run(t, "run", "dev"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if f.countCommands("start") != 0 || f.countCommands("shell") != 0 {
+		t.Fatalf("drifted VM was started: %#v", f.runner.commands)
+	}
+	if !strings.Contains(f.errOut.String(), "different configuration") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestRunRefusesConfigDriftWhileRunning(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "up"); code != 0 {
+		t.Fatalf("up exit %d: %s", code, f.errOut.String())
+	}
+	f.writeConfig(t, `version: 1
+vm:
+  image: ubuntu-24.04
+  cpus: 2
+  memory: 8GiB
+run:
+  default: dev
+  targets:
+    dev:
+      command: ["npm", "run", "dev"]
+`)
+	f.runner.status = "Running"
+	f.runner.commands = nil
+	f.errOut.Reset()
+	if code := f.run(t, "run", "dev"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if f.countCommands("shell") != 0 {
+		t.Fatalf("drifted VM ran a command: %#v", f.runner.commands)
+	}
+	if !strings.Contains(f.errOut.String(), "different configuration") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
 func TestRunNoStart(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.writeConfig(t, runConfig)
@@ -211,6 +337,18 @@ func TestRunMissingVM(t *testing.T) {
 	}
 	if !strings.Contains(f.errOut.String(), "does not exist") || !strings.Contains(f.errOut.String(), "boxt up") {
 		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestRunInteractiveTargetWarnsWithoutTerminal(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "run", "python"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.errOut.String(), "will not receive a PTY") {
+		t.Fatalf("missing PTY warning: %s", f.errOut.String())
 	}
 }
 
@@ -342,6 +480,23 @@ func TestUnknownTargetWorkspaceHint(t *testing.T) {
 	hint := err.(interface{ Hint() string }).Hint()
 	if !strings.Contains(hint, "boxt workspace run feature-a -- x") {
 		t.Fatalf("unexpected hint: %s", hint)
+	}
+}
+
+func TestNoDefaultTargetWorkspaceHint(t *testing.T) {
+	cfg := &config.Config{}
+	_, err := resolveRun(cfg, nil, -1, false, "boxt workspace run feature-a")
+	hint := err.(interface{ Hint() string }).Hint()
+	if !strings.Contains(hint, "boxt workspace run feature-a <target>") {
+		t.Fatalf("unexpected hint: %s", hint)
+	}
+}
+
+func TestUnexpectedArgumentsWorkspaceHint(t *testing.T) {
+	cfg := &config.Config{Run: config.RunConfig{Targets: map[string]config.RunTarget{"dev": {Command: []string{"true"}}}}}
+	_, err := resolveRun(cfg, []string{"dev", "extra"}, -1, false, "boxt workspace run feature-a")
+	if err == nil || !strings.Contains(err.Error(), "boxt workspace run feature-a <target>") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
