@@ -71,6 +71,7 @@ func (a *App) up(ctx context.Context) error {
 		return err
 	}
 	if a.Provision != nil {
+		fmt.Fprintln(a.Out, "Provisioning toolchain...")
 		if err := a.Provision(ctx, p); err != nil {
 			return fmt.Errorf("VM %s is running, but provisioning failed: %w", p.VMName(), err)
 		}

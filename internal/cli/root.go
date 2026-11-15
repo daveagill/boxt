@@ -20,6 +20,7 @@ import (
 	"github.com/boxt/boxt/internal/lima"
 	"github.com/boxt/boxt/internal/platform"
 	"github.com/boxt/boxt/internal/project"
+	"github.com/boxt/boxt/internal/toolchain"
 )
 
 // Version is overridden at build time with -ldflags.
@@ -27,18 +28,19 @@ var Version = "dev"
 
 // App holds the process dependencies used by commands. Tests replace these.
 type App struct {
-	In       io.Reader
-	Out      io.Writer
-	Err      io.Writer
-	Getwd    func() (string, error)
-	Runner   command.Runner
-	Git      *git.Client
-	Lima     *lima.Client
-	DataDir  func() (string, error)
-	LookPath platform.LookPath
-	Confirm  func(prompt string) (bool, error)
-	Logger   *slog.Logger
-	Verbose  bool
+	In        io.Reader
+	Out       io.Writer
+	Err       io.Writer
+	Getwd     func() (string, error)
+	Runner    command.Runner
+	Git       *git.Client
+	Lima      *lima.Client
+	DataDir   func() (string, error)
+	LookPath  platform.LookPath
+	Confirm   func(prompt string) (bool, error)
+	Logger    *slog.Logger
+	Verbose   bool
+	Toolchain ToolManager
 
 	// Provision is installed by the toolchain layer. It runs after the VM is
 	// running and before boxt reports the environment ready.
@@ -64,6 +66,15 @@ func New() *App {
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	app.Confirm = defaultConfirm(app.In, app.Out)
+	app.Toolchain = toolchain.New(app.Lima)
+	app.Provision = func(ctx context.Context, p *project.Project) error {
+		if app.Toolchain == nil {
+			return nil
+		}
+		_, err := app.Toolchain.Provision(ctx, p)
+		return err
+	}
+	app.PrepareCommand = toolchain.WrapArgv
 	return app
 }
 
@@ -118,6 +129,8 @@ func NewRoot(app *App) *cobra.Command {
 	root.AddCommand(newDestroyCmd(app))
 	root.AddCommand(newRunCmd(app))
 	root.AddCommand(newShellCmd(app))
+	root.AddCommand(newToolCmd(app))
+	root.AddCommand(newProvisionCmd(app))
 	root.AddCommand(newVersionCmd(app))
 	return root
 }

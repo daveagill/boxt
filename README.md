@@ -77,6 +77,36 @@ run:
 `.boxt/config.yaml` is the source of truth. Later milestones add VM lifecycle,
 execution, tools and workspaces.
 
+## Tools
+
+Tools are declared in `.boxt/config.yaml` and installed into the persistent VM
+with mise (an internal detail). Installed tools and caches live in the guest home
+and survive `boxt down` / `boxt up`.
+
+```bash
+boxt tool add node@24
+boxt tool add python@3.13
+boxt tool list
+boxt tool remove node
+boxt provision
+```
+
+`boxt tool add` updates the configuration atomically. If the VM is running, the
+tool is installed immediately; if it is stopped or not created, installation is
+deferred until `boxt up`. A failed installation keeps the declaration and tells
+you to retry with `boxt provision`.
+
+`boxt tool remove` removes only the declaration. Installed software stays in the
+VM, because other workspaces or run targets may still use it.
+
+`boxt provision` is the idempotent repair command: it starts the VM if needed,
+ensures mise and required system packages, installs missing declared tools,
+corrects versions, and verifies the execution environment. `boxt up` performs
+the same reconciliation before reporting the environment ready.
+
+Run targets and shells use mise's execution environment directly, so tools are
+on `PATH` without relying on `.bashrc` or `.profile`.
+
 ## Running commands
 
 ```bash

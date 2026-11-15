@@ -260,3 +260,7 @@ go build ./cmd/boxt
   `--no-start`, `boxt shell`, signal handling, exit-status propagation. Interactive
   streams are inherited by `limactl shell`, which allocates the SSH PTY and handles
   window resize; non-interactive streams are piped to avoid an unwanted PTY.
+- **M4 complete** — mise installer pinned and verified, apt base dependencies,
+  idempotent per-tool reconciliation, `tool add/list/remove`, `provision`, automatic
+  provisioning in `up`, and non-interactive tool PATH via `mise exec` with configs
+  and auto-install disabled. Unit tests use a fake guest; integration test gated.
