@@ -5,8 +5,8 @@ scoped Linux sandbox. Each project gets one Ubuntu VM, a shared toolchain, and
 multiple independent Git workspaces.
 
 Run agents without giving them your host home directory, host SSH keys or Docker
-socket. Project files stay on the host where your editor works; agents edit
-worktrees that you can commit, review and remove.
+socket. Project files stay on the host where your editor works; agents can edit
+the project directly or work in an independent Git worktree.
 
 ```bash
 mkdir myapp
@@ -15,12 +15,19 @@ git init
 
 boxt init --preset opencode
 boxt up
-boxt workspace create agent-1
-boxt workspace run agent-1 opencode
+boxt run opencode
 ```
 
-See [Presets](#presets), [Running commands](#running-commands) and the complete
-[example](#complete-example).
+The project root is the default workspace; no extra workspace setup is required.
+To run another agent in parallel in its own checkout:
+
+```bash
+boxt workspace create agent-2
+boxt workspace run agent-2 opencode
+```
+
+See [Presets](#presets), [Workspaces](#workspaces), [Running commands](#running-commands)
+and the complete [example](#complete-example).
 
 ## Supported hosts
 
