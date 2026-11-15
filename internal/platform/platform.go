@@ -20,6 +20,19 @@ type Info struct {
 // Current returns the running host platform.
 func Current() Info { return Info{OS: runtime.GOOS, Arch: runtime.GOARCH} }
 
+// IsWSL reports whether boxt is running inside Windows Subsystem for Linux.
+func IsWSL() bool {
+	if os.Getenv("WSL_INTEROP") != "" || os.Getenv("WSL_DISTRO_NAME") != "" {
+		return true
+	}
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	version := strings.ToLower(string(data))
+	return strings.Contains(version, "microsoft") || strings.Contains(version, "wsl")
+}
+
 // Supported reports whether boxt supports this host OS/architecture.
 func Supported(goos, goarch string) bool {
 	switch goos {
@@ -92,7 +105,8 @@ func VMsDir(dataDir, projectID string) string {
 // LimaNotFoundError provides platform-specific installation guidance without
 // installing anything automatically.
 type LimaNotFoundError struct {
-	OS string
+	OS  string
+	WSL bool
 }
 
 func (e *LimaNotFoundError) Error() string {
@@ -108,8 +122,12 @@ func (e *LimaNotFoundError) Hint() string {
 	case "darwin":
 		b.WriteString("  macOS: brew install lima")
 	case "linux":
-		b.WriteString("  Linux: install the latest Lima release and your distribution's QEMU/KVM packages.")
+		b.WriteString("  Linux: install the latest Linux Lima release and your distribution's QEMU/KVM packages.")
 		b.WriteString("\n  Ensure /dev/kvm is available for hardware acceleration.")
+		if e.WSL {
+			b.WriteString("\n\n  WSL detected: install the Linux limactl binary and QEMU packages inside WSL.")
+			b.WriteString("\n  Prefer projects on the WSL ext4 filesystem (~/projects), not /mnt/c.")
+		}
 	default:
 		b.WriteString("  Unsupported host platform.")
 	}
@@ -125,7 +143,7 @@ func CheckLima(goos string, lookPath LookPath) error {
 		lookPath = exec.LookPath
 	}
 	if _, err := lookPath("limactl"); err != nil {
-		return &LimaNotFoundError{OS: goos}
+		return &LimaNotFoundError{OS: goos, WSL: IsWSL()}
 	}
 	return nil
 }
@@ -152,13 +170,46 @@ func EnsureDir(path string, perm os.FileMode) error {
 // VirtualizationWarning returns a non-fatal diagnostic when Linux hardware
 // acceleration is unavailable. Lima can still run with software emulation.
 func VirtualizationWarning(goos string) string {
-	if goos != "linux" {
+	return virtualizationWarning(goos, IsWSL(), kvmAvailable())
+}
+
+func virtualizationWarning(goos string, wsl, kvm bool) string {
+	if goos != "linux" || kvm {
 		return ""
 	}
+	if wsl {
+		return "WSL detected: /dev/kvm is unavailable. Enable nested virtualization " +
+			"(`[wsl2] nestedVirtualization=true` in .wslconfig), restart WSL, and verify /dev/kvm. " +
+			"boxt will fall back to very slow software emulation."
+	}
+	return "/dev/kvm is not available; the VM may run slowly without hardware acceleration."
+}
+
+func kvmAvailable() bool {
 	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {
-		return "/dev/kvm is not available; the VM may run slowly without hardware acceleration."
+		return false
 	}
 	_ = f.Close()
-	return ""
+	return true
+}
+
+// WSLPathWarning warns about projects on Windows-mounted filesystems when
+// running inside WSL.
+func WSLPathWarning(path string) string {
+	return wslPathWarning(path, IsWSL())
+}
+
+func wslPathWarning(path string, wsl bool) string {
+	if !wsl {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	rel, err := filepath.Rel("/mnt", clean)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return "project is on a Windows-mounted filesystem (" + clean + "). " +
+		"Use the WSL ext4 filesystem (for example ~/projects/...) for reliable permissions, " +
+		"symlinks, inotify and Git worktree performance."
 }

@@ -87,6 +87,9 @@ examples/node-app/        complete runnable example
   running for troubleshooting is intentional.
 - Auto-start before run/shell reconciles tools. `--no-start` disables starting.
 - Do not assume a guest IP address.
+- WSL2 is experimental host support: run the Linux boxt/limactl binaries inside
+  WSL, keep projects/data on ext4 (not `/mnt/c`), and use nested virtualization
+  for KVM. `platform.IsWSL` gates WSL-specific hints and path warnings.
 
 ### Execution
 
@@ -187,8 +190,8 @@ go test -p 1 -tags=integration ./...
   guest user, PTY shell and exit status, tool install/persistence, dynamic port
   forwarding, workspace host/guest visibility, destroy preservation.
 - Real validation has passed on Linux/aarch64 with Lima 2.3.0 and QEMU TCG.
-  macOS and Fedora VM runs remain host-specific and unverified in this repo's
-  environment.
+  macOS, Fedora and WSL2 VM runs remain host-specific; WSL2 is experimental and
+  should be checked on a real Windows 11 host.
 - Validate generated Lima YAML after config changes:
 
 ```bash

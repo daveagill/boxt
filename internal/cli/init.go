@@ -34,6 +34,7 @@ func newInitCmd(app *App) *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(app.Out, "Initialized boxt project in %s\n", p.Root)
+			app.warnWSLPath(p.Root)
 			printGitNote(cmd, app, p)
 			fmt.Fprintf(app.Out, "\nNext: run `boxt up` to create and start the project VM.\n")
 			return nil

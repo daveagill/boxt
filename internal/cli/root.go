@@ -48,6 +48,8 @@ type App struct {
 
 	// PrepareCommand wraps guest argv with the internal toolchain environment.
 	PrepareCommand func(tools map[string]string, argv []string) []string
+
+	wslWarned map[string]bool
 }
 
 // New returns the production application wiring.
@@ -198,7 +200,27 @@ func (a *App) loadProject() (*project.Project, error) {
 	if err != nil {
 		return nil, fmt.Errorf("determine working directory: %w", err)
 	}
-	return project.Lookup(cwd)
+	p, err := project.Lookup(cwd)
+	if err != nil {
+		return nil, err
+	}
+	a.warnWSLPath(p.Root)
+	return p, nil
+}
+
+func (a *App) warnWSLPath(path string) {
+	warning := platform.WSLPathWarning(path)
+	if warning == "" {
+		return
+	}
+	if a.wslWarned == nil {
+		a.wslWarned = map[string]bool{}
+	}
+	if a.wslWarned[path] {
+		return
+	}
+	a.wslWarned[path] = true
+	fmt.Fprintf(a.Err, "Warning: %s\n", warning)
 }
 
 func newVersionCmd(app *App) *cobra.Command {

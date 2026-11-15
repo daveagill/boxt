@@ -25,15 +25,19 @@ Define your own targets and tools in `.boxt/config.yaml` — see
 | macOS | Apple Silicon (arm64) |
 | Ubuntu | x86_64, aarch64 |
 | Fedora | x86_64, aarch64 |
+| Windows 11 + WSL2 (Ubuntu) | x86_64, aarch64 (experimental) |
 
 The guest is always Ubuntu 24.04 LTS. [Lima](https://lima-vm.io/) provides
 virtualization, Git worktrees provide workspaces, and mise is used internally for
 tools.
 
-macOS Intel, Windows and WSL are not supported. Linux aarch64 support depends on
-the installed QEMU and virtualization stack. This repository's automated tests
-cross-compile for all targets and exercise host-path logic, but real VM runs must
-be performed on the supported host platforms.
+Native Windows and macOS Intel are not supported. WSL2 is supported
+experimentally: use WSL2 (not WSL1), keep projects and boxt data on the WSL ext4
+filesystem, and enable nested virtualization for KVM acceleration. Without KVM,
+Lima falls back to slow QEMU software emulation. Linux aarch64 support depends on
+the installed QEMU and virtualization stack. The automated test suite
+cross-compiles for all release targets and exercises host-path logic; real VM
+runs must be performed on the supported host platforms.
 
 ## Prerequisites
 
@@ -50,6 +54,18 @@ for their architecture and, for practical performance, `/dev/kvm` access:
   `qemu-utils` (for `qemu-img`)
 - Fedora: the `qemu-system-*` package for your architecture plus `qemu-img`
 
+For WSL2, install the **Linux** `limactl` release and QEMU packages inside the WSL
+distro. Enable nested virtualization in `%UserProfile%\.wslconfig` for KVM:
+
+```ini
+[wsl2]
+nestedVirtualization=true
+memory=12GB
+```
+
+Then restart WSL and verify `/dev/kvm` exists. Keep the project under
+`~/projects/...`, not `/mnt/c/...`.
+
 ## Installation
 
 Release archives are published as
@@ -57,8 +73,8 @@ Release archives are published as
 
 ```bash
 version=0.1.0
-curl -LO "https://github.com/boxt/boxt/releases/download/v${version}/boxt_${version}_linux_arm64.tar.gz"
-curl -LO "https://github.com/boxt/boxt/releases/download/v${version}/checksums.txt"
+curl -LO "https://github.com/daveagill/boxt/releases/download/v${version}/boxt_${version}_linux_arm64.tar.gz"
+curl -LO "https://github.com/daveagill/boxt/releases/download/v${version}/checksums.txt"
 sha256sum -c checksums.txt --ignore-missing   # macOS: shasum -a 256 -c
 tar xzf "boxt_${version}_linux_arm64.tar.gz"
 install -m 0755 boxt ~/.local/bin/boxt
@@ -67,7 +83,7 @@ install -m 0755 boxt ~/.local/bin/boxt
 From source:
 
 ```bash
-git clone https://github.com/boxt/boxt
+git clone https://github.com/daveagill/boxt
 cd boxt
 make build
 ./bin/boxt version
@@ -315,6 +331,9 @@ boxt does not expose guest services on the LAN by default. Port-forwarding
 configuration is applied when the VM is created, so changing `vm.ports` or
 `vm.port_forwarding` requires `boxt destroy` followed by `boxt up`.
 
+On WSL2, forwards bind inside the WSL VM; reaching them from Windows also depends
+on WSL `localhostForwarding`, firewall and VPN configuration.
+
 ## Security limitations
 
 - Lima networking is convenient, not a hardened security boundary equivalent to a
@@ -349,6 +368,38 @@ inside the VM instead.
 Install Lima from <https://lima-vm.io/docs/installation/>. On macOS:
 `brew install lima`. On Linux, install Lima and the QEMU packages for your
 architecture; verify `/dev/kvm` exists for acceleration.
+
+**WSL2: no `/dev/kvm` / VM is extremely slow**
+
+Enable nested virtualization and restart WSL:
+
+```ini
+# %UserProfile%\.wslconfig
+[wsl2]
+nestedVirtualization=true
+memory=12GB
+```
+
+Check `/dev/kvm` inside WSL. Without it boxt uses QEMU software emulation (TCG),
+which works but is slow. Also ensure the guest memory fits within the WSL memory
+limit.
+
+**WSL2: project permissions or Git worktrees behave strangely**
+
+The project is probably on `/mnt/c` (DrvFs). Move it to the WSL ext4 filesystem,
+for example `~/projects/myapp`, and set `XDG_DATA_HOME` there as well.
+
+**WSL2: ports work inside WSL but not from Windows**
+
+First verify from inside WSL:
+
+```bash
+curl 127.0.0.1:3000
+```
+
+If that works, check WSL `localhostForwarding`, Windows Firewall/VPN rules, and
+that the forward is bound to `127.0.0.1` inside WSL. LAN exposure across the
+WSL/Windows boundary is more restrictive than on a native Linux host.
 
 **Project not initialized**
 
@@ -441,8 +492,9 @@ BOXT_INTEGRATION_MEMORY=512MiB make integration
 The suite was executed on Linux/aarch64 with Lima, QEMU and TCG (no KVM) using
 512 MiB guests. It covers VM lifecycle and persistence, project/workspace mounts,
 the guest user, PTY shell and exit status, tool installation and persistence,
-workspace host/guest visibility, and dynamic port forwarding. macOS Apple Silicon
-and Fedora/x86_64 VM runs must be performed on those hosts.
+workspace host/guest visibility, and dynamic port forwarding. macOS Apple Silicon,
+Fedora/x86_64 and WSL2 VM runs must be performed on those hosts; WSL2 support is
+experimental.
 
 Generated Lima configuration is validated against `limactl validate` when
 `BOXT_LIMACTL` is set:

@@ -117,3 +117,52 @@ func TestVirtualizationWarning(t *testing.T) {
 		t.Fatalf("unexpected warning with /dev/kvm: %q", got)
 	}
 }
+
+func TestVirtualizationWarningVariants(t *testing.T) {
+	if got := virtualizationWarning("linux", true, false); !strings.Contains(got, "WSL") || !strings.Contains(got, "nestedVirtualization") {
+		t.Fatalf("WSL warning = %q", got)
+	}
+	if got := virtualizationWarning("linux", true, true); got != "" {
+		t.Fatalf("warning with KVM = %q", got)
+	}
+	if got := virtualizationWarning("darwin", true, false); got != "" {
+		t.Fatalf("macOS WSL warning = %q", got)
+	}
+}
+
+func TestWSLPathWarning(t *testing.T) {
+	for _, path := range []string{"/mnt/c/project", "/mnt/d/work/app", "/mnt/wsl/foo"} {
+		if got := wslPathWarning(path, true); !strings.Contains(got, "Windows-mounted") {
+			t.Errorf("wslPathWarning(%q) = %q", path, got)
+		}
+	}
+	for _, path := range []string{"/home/me/project", "/mnt", "/"} {
+		if got := wslPathWarning(path, true); got != "" {
+			t.Errorf("wslPathWarning(%q) = %q", path, got)
+		}
+	}
+	if got := wslPathWarning("/mnt/c/project", false); got != "" {
+		t.Fatalf("non-WSL warning = %q", got)
+	}
+}
+
+func TestIsWSLDetection(t *testing.T) {
+	t.Setenv("WSL_INTEROP", "/run/WSL/1_interop")
+	if !IsWSL() {
+		t.Fatal("WSL_INTEROP not detected")
+	}
+	t.Setenv("WSL_INTEROP", "")
+	t.Setenv("WSL_DISTRO_NAME", "Ubuntu")
+	if !IsWSL() {
+		t.Fatal("WSL_DISTRO_NAME not detected")
+	}
+}
+
+func TestLimaHintWSL(t *testing.T) {
+	hint := (&LimaNotFoundError{OS: "linux", WSL: true}).Hint()
+	for _, want := range []string{"WSL detected", "ext4", "QEMU"} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("WSL hint missing %q:\n%s", want, hint)
+		}
+	}
+}

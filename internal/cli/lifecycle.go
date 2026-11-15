@@ -33,12 +33,14 @@ func (a *App) pathsFor(p *project.Project) (projectPaths, error) {
 		return projectPaths{}, err
 	}
 	vmDir := platform.VMsDir(dataDir, p.ID)
-	return projectPaths{
+	paths := projectPaths{
 		DataDir:       dataDir,
 		WorkspacesDir: platform.WorkspacesDir(dataDir, p.ID),
 		VMDir:         vmDir,
 		LimaConfig:    filepath.Join(vmDir, lima.ConfigFileName),
-	}, nil
+	}
+	a.warnWSLPath(paths.WorkspacesDir)
+	return paths, nil
 }
 
 func (a *App) requireLima() error {
