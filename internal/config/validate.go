@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -196,6 +198,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Seed != nil {
+		validateSeedPatterns(v, "seed.include", c.Seed.Include)
+		validateSeedPatterns(v, "seed.exclude", c.Seed.Exclude)
+	}
+
 	if len(v.errs) == 0 {
 		return nil
 	}
@@ -224,6 +231,79 @@ func validateHookSet(v *validator, event, phase string, hooks []Hook) {
 			v.add(path+".where", "must be %q or %q", HookWhereGuest, HookWhereHost)
 		}
 	}
+}
+
+func validateSeedPatterns(v *validator, field string, patterns []string) {
+	for i, pattern := range patterns {
+		if _, err := NormalizeSeedPattern(pattern); err != nil {
+			v.add(fmt.Sprintf("%s[%d]", field, i), "%s", err)
+		}
+	}
+}
+
+// NormalizeSeedPattern validates a root-relative, slash-based seed pattern and
+// returns its canonical form. Patterns must be non-empty, relative, free of NUL
+// and '..' path segments, and use valid glob syntax. A trailing slash marks a
+// directory pattern and is preserved.
+func NormalizeSeedPattern(pattern string) (string, error) {
+	if pattern == "" {
+		return "", errors.New("must not be empty")
+	}
+	if strings.ContainsRune(pattern, 0) {
+		return "", errors.New("must not contain NUL")
+	}
+	if strings.ContainsRune(pattern, '\\') {
+		return "", errors.New("must use '/' separators; backslash escapes are not supported")
+	}
+	if isAbsoluteSeedPattern(pattern) {
+		return "", errors.New("must be relative")
+	}
+
+	trailingSlash := strings.HasSuffix(pattern, "/")
+	trimmed := strings.TrimSuffix(pattern, "/")
+	if trimmed == "" {
+		return "", errors.New("must not be empty")
+	}
+
+	parts := strings.Split(trimmed, "/")
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part {
+		case "":
+			return "", errors.New("must not contain empty path segments")
+		case ".":
+			continue
+		case "..":
+			return "", errors.New("must not contain '..' path segments")
+		}
+		if _, err := path.Match(part, ""); err != nil {
+			return "", fmt.Errorf("invalid glob syntax in %q", part)
+		}
+		normalized = append(normalized, part)
+	}
+	if len(normalized) == 0 {
+		return "", errors.New("must not be empty")
+	}
+	result := strings.Join(normalized, "/")
+	if trailingSlash {
+		result += "/"
+	}
+	return result, nil
+}
+
+// ValidateSeedPattern reports whether pattern is an acceptable seed pattern.
+func ValidateSeedPattern(pattern string) error {
+	_, err := NormalizeSeedPattern(pattern)
+	return err
+}
+
+func isAbsoluteSeedPattern(pattern string) bool {
+	if path.IsAbs(pattern) {
+		return true
+	}
+	// Reject Windows drive prefixes on every host so a shared config behaves
+	// the same when the project moves between operating systems.
+	return len(pattern) >= 2 && pattern[1] == ':'
 }
 
 // MemoryBytes validates and converts a memory size such as 8GiB to bytes.

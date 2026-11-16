@@ -135,7 +135,7 @@ func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget strin
 	fmt.Fprintf(a.Out, "  Guest:  %s\n", ws.GuestPath)
 	fmt.Fprintf(a.Out, "  Branch: %s\n", ws.Branch)
 	if seed {
-		result, err := mgr.Seed(ctx, name)
+		result, err := mgr.SeedWithRules(ctx, name, p.Config.SeedRules())
 		if err != nil {
 			return err
 		}
@@ -379,7 +379,10 @@ func (a *App) workspaceRemove(ctx context.Context, name string, force bool) erro
 			return fmt.Errorf("workspace remove aborted by pre-hook: %w", err)
 		}
 	}
-	removed, err := mgr.Remove(ctx, name, force)
+	removed, err := mgr.RemoveWithOptions(ctx, name, workspace.RemoveOptions{
+		Force: force,
+		Seed:  p.Config.SeedRules(),
+	})
 	if err != nil {
 		return err
 	}
@@ -451,7 +454,7 @@ func (a *App) workspaceSeed(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	result, err := mgr.Seed(ctx, name)
+	result, err := mgr.SeedWithRules(ctx, name, p.Config.SeedRules())
 	if err != nil {
 		return err
 	}

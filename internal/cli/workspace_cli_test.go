@@ -644,6 +644,151 @@ func TestWorkspaceSeedCommand(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCreateSeedUsesConfigFilters(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, `version: 1
+seed:
+  include: [".env", "*.log"]
+  exclude: ["debug.log"]
+run:
+  targets: {}
+`)
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".gitignore"), []byte(".env\nnode_modules/\n*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, f.project.Root, "add", ".gitignore", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "seed config")
+
+	for _, rel := range []string{".env", "app.log", "debug.log", "node_modules/pkg/index.js"} {
+		path := filepath.Join(f.project.Root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(rel+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if code := f.run(t, "workspace", "create", "agent-1", "--seed"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "agent-1")
+	for _, rel := range []string{".env", "app.log"} {
+		if _, err := os.Stat(filepath.Join(path, rel)); err != nil {
+			t.Fatalf("included file %s missing: %v", rel, err)
+		}
+	}
+	for _, rel := range []string{"debug.log", "node_modules/pkg/index.js"} {
+		if _, err := os.Stat(filepath.Join(path, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("filtered file %s was seeded: %v", rel, err)
+		}
+	}
+	if !strings.Contains(f.out.String(), "Seeded 2 ignored file(s)") {
+		t.Fatalf("seed summary missing:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceSeedCommandUsesConfigFilters(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, `version: 1
+seed:
+  include: [".env"]
+run:
+  targets: {}
+`)
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".gitignore"), []byte(".env\n*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, f.project.Root, "add", ".gitignore", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "seed config")
+	for _, rel := range []string{".env", "app.log"} {
+		if err := os.WriteFile(filepath.Join(f.project.Root, rel), []byte(rel+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := f.run(t, "workspace", "create", "agent-1"); code != 0 {
+		t.Fatalf("create failed: %s", f.errOut.String())
+	}
+	if code := f.run(t, "workspace", "seed", "agent-1"); code != 0 {
+		t.Fatalf("seed exit %d: %s", code, f.errOut.String())
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "agent-1")
+	if _, err := os.Stat(filepath.Join(path, ".env")); err != nil {
+		t.Fatalf(".env not seeded: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "app.log")); !os.IsNotExist(err) {
+		t.Fatalf("app.log was seeded despite filters: %v", err)
+	}
+	if !strings.Contains(f.out.String(), "Seeded 1 ignored file(s)") {
+		t.Fatalf("seed summary missing:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceRemoveUsesSeedAllowRemove(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, `version: 1
+seed:
+  include: [".env"]
+  allow_remove: true
+run:
+  targets: {}
+`)
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".gitignore"), []byte(".env\ncache/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, f.project.Root, "add", ".gitignore", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "seed config")
+	if code := f.run(t, "workspace", "create", "agent-1"); code != 0 {
+		t.Fatalf("create failed: %s", f.errOut.String())
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "agent-1")
+	if err := os.WriteFile(filepath.Join(path, ".env"), []byte("SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "workspace", "remove", "agent-1"); code != 0 {
+		t.Fatalf("remove exit %d: %s", code, f.errOut.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("workspace was not removed")
+	}
+}
+
+func TestWorkspaceRemoveSeedUnmatchedBlocks(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, `version: 1
+seed:
+  include: [".env"]
+  allow_remove: true
+run:
+  targets: {}
+`)
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".gitignore"), []byte(".env\ncache/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, f.project.Root, "add", ".gitignore", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "seed config")
+	if code := f.run(t, "workspace", "create", "agent-1"); code != 0 {
+		t.Fatalf("create failed: %s", f.errOut.String())
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "agent-1")
+	if err := os.MkdirAll(filepath.Join(path, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "cache", "data.bin"), []byte("cache\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.errOut.Reset()
+	if code := f.run(t, "workspace", "remove", "agent-1"); code != 1 {
+		t.Fatalf("remove exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "seed.include") || !strings.Contains(f.errOut.String(), "cache/data.bin") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("blocked removal deleted the workspace")
+	}
+}
+
 func TestWorkspaceListShowsDirtyAndDivergence(t *testing.T) {
 	f := newWorkspaceFixture(t)
 	if code := f.run(t, "workspace", "create", "agent-1"); code != 0 {
@@ -718,6 +863,40 @@ func TestWorkspaceMergeRemove(t *testing.T) {
 	}
 	if !strings.Contains(f.out.String(), "Git branch boxt/feature-a was kept") {
 		t.Fatalf("branch retention missing:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceMergeRemoveUsesSeedAllowRemove(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, `version: 1
+seed:
+  include: [".env"]
+  allow_remove: true
+run:
+  targets: {}
+`)
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, f.project.Root, "add", ".gitignore", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "seed config")
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed: %s", f.errOut.String())
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "feature-a")
+	if err := os.WriteFile(filepath.Join(path, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, path, "add", "feature.txt")
+	gitRunInTest(t, path, "commit", "-q", "-m", "feature")
+	if err := os.WriteFile(filepath.Join(path, ".env"), []byte("SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "workspace", "merge", "feature-a", "--remove"); code != 0 {
+		t.Fatalf("merge exit %d: %s", code, f.errOut.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("workspace with allowed ignored files was not removed")
 	}
 }
 

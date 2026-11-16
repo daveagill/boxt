@@ -39,9 +39,28 @@ var ErrConfigExists = errors.New("project configuration already exists")
 type Config struct {
 	Version int               `yaml:"version"`
 	VM      VMConfig          `yaml:"vm"`
+	Seed    *SeedConfig       `yaml:"seed,omitempty"`
 	Tools   map[string]string `yaml:"tools,omitempty"`
 	Run     RunConfig         `yaml:"run"`
 	Hooks   *HooksConfig      `yaml:"hooks,omitempty"`
+}
+
+// SeedConfig controls which Git-ignored files may be copied into a workspace
+// and whether removal may discard ignored files that match the same rules.
+type SeedConfig struct {
+	Include     []string `yaml:"include,omitempty"`
+	Exclude     []string `yaml:"exclude,omitempty"`
+	AllowRemove bool     `yaml:"allow_remove,omitempty"`
+}
+
+// SeedRules returns the configured seed rules, or empty rules when no seed
+// section is present. Empty rules keep the historical copy-all-ignored behavior
+// and never allow removal without --force.
+func (c *Config) SeedRules() SeedConfig {
+	if c == nil || c.Seed == nil {
+		return SeedConfig{}
+	}
+	return *c.Seed
 }
 
 // Hook lifecycle events.

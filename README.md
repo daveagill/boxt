@@ -283,6 +283,14 @@ vm:
   port_forwarding: auto
   auto_start: true
 
+seed:
+  include:
+    - ".env"
+    - "node_modules/**"
+  exclude:
+    - "node_modules/.cache/**"
+  allow_remove: false
+
 tools:
   node: "lts"
   python: "latest"
@@ -304,6 +312,24 @@ run:
 Configuration is validated with field paths. Unsupported versions and unknown
 fields are rejected. Tool declarations are edited atomically while preserving
 comments and unrelated configuration.
+
+The optional `seed` section controls which Git-ignored files
+`workspace create --seed` and `workspace seed` copy. `include` and `exclude` are
+root-relative, slash-based patterns. `**` matches zero or more path segments;
+`*`, `?` and character classes match within one segment; a trailing `/` or a
+plain directory name such as `node_modules` matches the whole tree below it.
+Excludes are applied after includes and win. An empty `include` list copies every
+ignored file, which is the weaker historical default. Tracked files are never
+copied, and boxt does not read `.worktreeinclude` or any other seed manifest.
+
+`allow_remove` is off by default. When false, `workspace remove` refuses any
+workspace that still contains ignored files unless `--force` is passed. When
+true, removal without `--force` is allowed only when every currently ignored
+path matches the same include/exclude rules; unmatched paths are listed and the
+workspace is kept. This policy is intentionally weak when `include` is empty:
+every ignored path matches. Narrow `include` (for example to `.env` and
+`node_modules/**`) and use `exclude` for paths you want to keep protected.
+`--force` always discards everything.
 
 ## Presets
 
@@ -483,9 +509,20 @@ broken and locked worktrees are reported without failing the whole list.
 
 `--seed` (or `boxt workspace seed <name>`) copies ignored files from the default
 workspace into a named workspace after the worktree is created and before
-`--run`. Only ignored files are copied (`git ls-files --others --ignored
---exclude-standard`), never tracked source. Existing target paths are left alone
-and reported, and symlinks or special files are skipped. This is useful for
+`--run`. The optional `seed.include`/`seed.exclude` rules select candidates;
+without a `seed` section every ignored file is copied. Only ignored files are
+copied (`git ls-files --others --ignored
+--exclude-standard`), never tracked source. Existing target paths are never
+overwritten: any existing file, directory or symlink is left alone and reported.
+Symlinks are preserved as symlinks instead of being followed, including absolute,
+escaping and dangling links (an escaping or dangling link may be unusable, or
+dangle, in the guest). Regular files use a copy-on-write reflink when the host
+filesystem supports it and fall back to a byte copy otherwise; file permissions
+and modification times are preserved, along with permissions and modification
+times of directories the seed creates. Special files such as sockets, FIFOs and
+device nodes are skipped with a warning. Seeding never writes outside the
+workspace root and aborts if a destination parent component is a symlink that
+resolves outside the workspace, including a dangling one. This is useful for
 local `.env` files, dependency caches and build output.
 
 The default branch name is `boxt/<workspace>`. Pass `--branch` to create or check
@@ -506,11 +543,14 @@ than creating a merge commit, and it refuses a dirty workspace or project root.
 kept. boxt never rebases, squashes or forces a merge.
 
 `boxt workspace remove` refuses to discard uncommitted changes or ignored local
-files such as `.env` and caches; `--force` deliberately discards them. Git
-branches are always retained. Locked worktrees must be unlocked with Git first.
-Stale metadata is pruned safely and boxt never uses a manual `rm -rf` to delete a
-worktree. Only worktrees created by boxt are listed and managed; manual Git
-worktrees are left alone.
+files such as `.env` and caches; `--force` deliberately discards them. With
+`seed.allow_remove: true`, ignored files may be removed without `--force` when
+every one matches the current `seed.include`/`seed.exclude` rules; unmatched
+paths are reported and the workspace is kept. Rules are evaluated at removal
+time, not recorded from seeding. Git branches are always retained. Locked
+worktrees must be unlocked with Git first. Stale metadata is pruned safely and
+boxt never uses a manual `rm -rf` to delete a worktree. Only worktrees created by
+boxt are listed and managed; manual Git worktrees are left alone.
 
 Named workspaces require the project root to be the Git repository root. An empty
 repository with no commits is supported using an orphan branch (Git 2.42+).

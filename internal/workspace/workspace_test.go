@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/config"
 	"github.com/daveagill/boxt/internal/git"
 	"github.com/daveagill/boxt/internal/project"
 )
@@ -316,6 +317,159 @@ func TestRemoveIgnoredFilesRequiresForce(t *testing.T) {
 	}
 	if _, err := os.Stat(ws.HostPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("forced remove left workspace")
+	}
+}
+
+// setupIgnoredWorkspace creates a workspace with committed ignore patterns.
+func setupIgnoredWorkspace(t *testing.T, name string, patterns ...string) (*Manager, string) {
+	t.Helper()
+	repo := initRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(strings.Join(patterns, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "ignore local files")
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), name, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m, ws.HostPath
+}
+
+func writeWorkspaceFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRemoveWithOptionsAllowsMatchingIgnoredFiles(t *testing.T) {
+	m, host := setupIgnoredWorkspace(t, "allowed", ".env", "node_modules/")
+	writeWorkspaceFile(t, host, ".env", "SECRET=1\n")
+	writeWorkspaceFile(t, host, "node_modules/pkg/index.js", "module\n")
+
+	_, err := m.RemoveWithOptions(context.Background(), "allowed", RemoveOptions{
+		Seed: config.SeedConfig{
+			Include:     []string{".env", "node_modules/**"},
+			AllowRemove: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RemoveWithOptions: %v", err)
+	}
+	if _, err := os.Stat(host); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("workspace was not removed")
+	}
+}
+
+func TestRemoveWithOptionsBlocksUnmatchedIgnoredFiles(t *testing.T) {
+	m, host := setupIgnoredWorkspace(t, "unmatched", ".env", "cache/")
+	writeWorkspaceFile(t, host, ".env", "SECRET=1\n")
+	writeWorkspaceFile(t, host, "cache/data.bin", "cache\n")
+
+	_, err := m.RemoveWithOptions(context.Background(), "unmatched", RemoveOptions{
+		Seed: config.SeedConfig{
+			Include:     []string{".env"},
+			AllowRemove: true,
+		},
+	})
+	var ignored *ErrIgnoredFiles
+	if !errors.As(err, &ignored) {
+		t.Fatalf("expected ErrIgnoredFiles, got %v", err)
+	}
+	if len(ignored.Paths) != 1 || ignored.Paths[0] != "cache/data.bin" {
+		t.Fatalf("unmatched paths = %#v", ignored.Paths)
+	}
+	if !strings.Contains(ignored.Hint(), "seed.include") {
+		t.Fatalf("hint lacks seed guidance: %s", ignored.Hint())
+	}
+	if _, statErr := os.Stat(host); statErr != nil {
+		t.Fatal("blocked removal deleted the workspace")
+	}
+	if _, statErr := os.Stat(filepath.Join(host, "cache", "data.bin")); statErr != nil {
+		t.Fatal("blocked removal deleted an ignored file")
+	}
+}
+
+func TestRemoveWithOptionsBlocksExcludedIgnoredFiles(t *testing.T) {
+	m, host := setupIgnoredWorkspace(t, "excluded", "node_modules/")
+	writeWorkspaceFile(t, host, "node_modules/pkg/index.js", "module\n")
+	writeWorkspaceFile(t, host, "node_modules/.cache/tmp", "cache\n")
+
+	_, err := m.RemoveWithOptions(context.Background(), "excluded", RemoveOptions{
+		Seed: config.SeedConfig{
+			Include:     []string{"node_modules/**"},
+			Exclude:     []string{"node_modules/.cache/**"},
+			AllowRemove: true,
+		},
+	})
+	var ignored *ErrIgnoredFiles
+	if !errors.As(err, &ignored) {
+		t.Fatalf("expected ErrIgnoredFiles, got %v", err)
+	}
+	if len(ignored.Paths) != 1 || ignored.Paths[0] != "node_modules/.cache/tmp" {
+		t.Fatalf("unmatched paths = %#v", ignored.Paths)
+	}
+	if _, statErr := os.Stat(host); statErr != nil {
+		t.Fatal("blocked removal deleted the workspace")
+	}
+}
+
+func TestRemoveWithOptionsEmptyIncludeAllowsAllIgnored(t *testing.T) {
+	m, host := setupIgnoredWorkspace(t, "empty-include", ".env", "cache/")
+	writeWorkspaceFile(t, host, ".env", "SECRET=1\n")
+	writeWorkspaceFile(t, host, "cache/data.bin", "cache\n")
+
+	_, err := m.RemoveWithOptions(context.Background(), "empty-include", RemoveOptions{
+		Seed: config.SeedConfig{AllowRemove: true},
+	})
+	if err != nil {
+		t.Fatalf("RemoveWithOptions: %v", err)
+	}
+	if _, err := os.Stat(host); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("workspace was not removed")
+	}
+}
+
+func TestRemoveWithOptionsStillBlocksDirtyTrackedFiles(t *testing.T) {
+	m, host := setupIgnoredWorkspace(t, "dirty", ".env")
+	writeWorkspaceFile(t, host, ".env", "SECRET=1\n")
+	writeWorkspaceFile(t, host, "README.md", "changed\n")
+
+	_, err := m.RemoveWithOptions(context.Background(), "dirty", RemoveOptions{
+		Seed: config.SeedConfig{AllowRemove: true},
+	})
+	var dirty *ErrDirty
+	if !errors.As(err, &dirty) {
+		t.Fatalf("expected ErrDirty, got %v", err)
+	}
+	if _, statErr := os.Stat(host); statErr != nil {
+		t.Fatal("dirty workspace was removed")
+	}
+}
+
+func TestRemoveWithOptionsForceOverridesUnmatchedIgnored(t *testing.T) {
+	m, host := setupIgnoredWorkspace(t, "forced", ".env", "cache/")
+	writeWorkspaceFile(t, host, ".env", "SECRET=1\n")
+	writeWorkspaceFile(t, host, "cache/data.bin", "cache\n")
+
+	_, err := m.RemoveWithOptions(context.Background(), "forced", RemoveOptions{
+		Force: true,
+		Seed: config.SeedConfig{
+			Include:     []string{".env"},
+			AllowRemove: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RemoveWithOptions --force: %v", err)
+	}
+	if _, err := os.Stat(host); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("forced removal left the workspace")
 	}
 }
 
@@ -800,11 +954,18 @@ func TestSeedCopiesOnlyIgnoredFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
-	if result.Copied != 2 {
-		t.Fatalf("copied = %d, result = %#v", result.Copied, result)
+	wantCopied := 2
+	if linkCreated {
+		wantCopied++
+	}
+	if result.Copied != wantCopied {
+		t.Fatalf("copied = %d, want %d, result = %#v", result.Copied, wantCopied, result)
 	}
 	if len(result.Conflicts) != 1 || result.Conflicts[0] != ".env" {
 		t.Fatalf("conflicts = %#v", result.Conflicts)
+	}
+	if len(result.Skipped) != 0 {
+		t.Fatalf("skipped = %#v", result.Skipped)
 	}
 	data, err := os.ReadFile(filepath.Join(ws.HostPath, ".env"))
 	if err != nil || string(data) != "KEEP=1\n" {
@@ -822,8 +983,12 @@ func TestSeedCopiesOnlyIgnoredFiles(t *testing.T) {
 		t.Fatalf("cache not copied: %v", err)
 	}
 	if linkCreated {
-		if _, err := os.Lstat(filepath.Join(ws.HostPath, "link")); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("symlink was copied: %v", err)
+		got, err := os.Readlink(filepath.Join(ws.HostPath, "link"))
+		if err != nil {
+			t.Fatalf("symlink was not preserved: %v", err)
+		}
+		if got != filepath.Join(repo, "README.md") {
+			t.Fatalf("symlink target = %q", got)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".env")); err != nil {

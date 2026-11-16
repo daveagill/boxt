@@ -172,9 +172,27 @@ examples/node-app/        complete runnable example
   short HEAD and ahead/behind vs the default branch, but never fail the whole
   list for one missing, detached or broken worktree.
 - Ignored-file seeding copies only `git ls-files --others --ignored
-  --exclude-standard` paths from the default workspace, never tracked files,
-  never overwrites existing target paths, and skips symlinks/special files.
-  `create --seed` happens after worktree creation and before `--run`/hooks.
+  --exclude-standard` paths from the default workspace, never tracked files and
+  never an existing destination path (file, directory or symlink). Candidates
+  may be filtered by optional `seed.include`/`seed.exclude` rules: patterns are
+  root-relative, slash-based Gitignore-style globs (`**` spans path segments;
+  `*`, `?` and character classes match within a segment; a trailing `/` or plain
+  directory name covers descendants). Includes select candidates; excludes are
+  applied afterwards and win. An empty include list copies every ignored file.
+  There is no seed manifest, provenance record or `.worktreeinclude` file.
+  Special files such as sockets, FIFOs and device nodes are skipped with a
+  warning. Source symlinks are preserved as symlinks, never resolved or followed,
+  including relative, absolute, escaping and dangling links. Every existing
+  destination parent component must resolve inside the workspace root; a parent
+  symlink that points outside (or dangles) aborts the seed before writing, and
+  the seed never writes outside `ws.HostPath`. Regular files are reflinked
+  (`FICLONE` on Linux, `clonefile` on macOS) with a byte-copy fallback when
+  cloning is unsupported; hardlinks are never used. File permissions and file
+  and directory modification times are preserved, along with permissions on
+  directories the seed creates; pre-existing destination directories are not
+  stamped with source times. `BOXT_TEST_DISABLE_REFLINK=1` forces the byte-copy
+  path in tests. `create --seed` happens after worktree creation and before
+  `--run`/hooks.
 - Store the owning project root in the worktree's Git admin directory as
   `boxt-project`, so commands run from inside a workspace resolve the same VM.
 - Reject workspace names that are absolute, traversal-based, reserved (`default`)
@@ -182,8 +200,15 @@ examples/node-app/        complete runnable example
 - Creation is atomic: verify the checkout and write metadata; roll back the
   worktree (and only a newly-created branch) if post-add setup fails.
 - Removal:
-  - refuse uncommitted changes (`--force` to discard);
-  - refuse ignored files such as `.env`/caches (`--force` to discard);
+  - refuse uncommitted tracked changes and non-ignored untracked files
+    (`--force` to discard);
+  - refuse ignored files such as `.env`/caches (`--force` to discard) unless
+    `seed.allow_remove: true` and every currently ignored path matches the
+    current `seed.include`/`seed.exclude` rules; list unmatched paths and keep
+    the workspace otherwise. Rules are evaluated at removal time; boxt keeps no
+    seed manifest or provenance. An empty include list matches every ignored
+    path, which is the weaker documented semantics. `--force` is the complete
+    override;
   - refuse locked worktrees (unlock with Git);
   - never prune unrelated worktrees;
   - handle stale metadata by targeted removal of that worktree only;

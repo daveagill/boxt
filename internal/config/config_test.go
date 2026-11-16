@@ -346,15 +346,127 @@ hooks:
 	}
 }
 
+func TestParseSeedConfig(t *testing.T) {
+	cfg, err := Parse([]byte(`version: 1
+seed:
+  include:
+    - ".env"
+    - "node_modules/"
+    - "node_modules/**"
+    - "**/*.log"
+    - "cache/**/tmp"
+    - "*.env"
+    - "file[0-9].txt"
+    - "foo?bar"
+  exclude:
+    - "node_modules/.cache/**"
+    - "**/debug.log"
+  allow_remove: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Seed == nil {
+		t.Fatal("seed section not decoded")
+	}
+	if !cfg.Seed.AllowRemove {
+		t.Fatal("allow_remove not decoded")
+	}
+	if len(cfg.Seed.Include) != 8 || len(cfg.Seed.Exclude) != 2 {
+		t.Fatalf("seed = %#v", cfg.Seed)
+	}
+	if cfg.SeedRules().Include[0] != ".env" {
+		t.Fatalf("SeedRules = %#v", cfg.SeedRules())
+	}
+}
+
+func TestParseSeedValidationErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		yaml   string
+		path   string
+		errSub string
+	}{
+		{"empty include", "version: 1\nseed:\n  include: [\"\"]\n", "seed.include[0]", "must not be empty"},
+		{"absolute include", "version: 1\nseed:\n  include: [\"/etc/passwd\"]\n", "seed.include[0]", "must be relative"},
+		{"windows absolute include", "version: 1\nseed:\n  include: [\"C:/tmp/x\"]\n", "seed.include[0]", "must be relative"},
+		{"parent traversal", "version: 1\nseed:\n  include: [\"../secret\"]\n", "seed.include[0]", ".."},
+		{"nested traversal", "version: 1\nseed:\n  include: [\"a/../b\"]\n", "seed.include[0]", ".."},
+		{"empty segment", "version: 1\nseed:\n  include: [\"a//b\"]\n", "seed.include[0]", "empty path segments"},
+		{"bad glob", "version: 1\nseed:\n  include: [\"[abc\"]\n", "seed.include[0]", "invalid glob syntax"},
+		{"backslash", "version: 1\nseed:\n  include: [\"a\\\\b\"]\n", "seed.include[0]", "separators"},
+		{"bad exclude", "version: 1\nseed:\n  exclude: [\"\"]\n", "seed.exclude[0]", "must not be empty"},
+		{"unknown seed field", "version: 1\nseed:\n  includes: [\".env\"]\n", "", "field includes not found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.yaml))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.errSub) {
+				t.Fatalf("error %q does not contain %q", err, tt.errSub)
+			}
+			if tt.path != "" && !strings.Contains(err.Error(), tt.path) {
+				t.Fatalf("error %q does not contain field path %q", err, tt.path)
+			}
+		})
+	}
+}
+
+func TestSeedPatternRejectsNUL(t *testing.T) {
+	cfg := Default()
+	cfg.Seed = &SeedConfig{Include: []string{"bad\x00pattern"}}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("expected NUL error, got %v", err)
+	}
+}
+
+func TestNormalizeSeedPattern(t *testing.T) {
+	valid := map[string]string{
+		".env":            ".env",
+		"node_modules/":   "node_modules/",
+		"node_modules/**": "node_modules/**",
+		"**/*.log":        "**/*.log",
+		"cache/**/tmp":    "cache/**/tmp",
+		"*.env":           "*.env",
+		"./.env":          ".env",
+		"a/./b":           "a/b",
+	}
+	for in, want := range valid {
+		got, err := NormalizeSeedPattern(in)
+		if err != nil {
+			t.Fatalf("NormalizeSeedPattern(%q): %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("NormalizeSeedPattern(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"", "/abs", "../x", "a/../b", "a//b", "[", "a\\b", "C:/x"} {
+		if _, err := NormalizeSeedPattern(in); err == nil {
+			t.Fatalf("NormalizeSeedPattern(%q) unexpectedly succeeded", in)
+		}
+	}
+}
+
 func TestMarshalRoundTrip(t *testing.T) {
 	cfg := Default()
 	cfg.Tools["node"] = "24"
 	cfg.Run.Default = "dev"
 	cfg.Run.Targets["dev"] = RunTarget{Command: []string{"npm", "run", "dev"}}
 	cfg.VM.Ports = []PortForward{{Guest: 3000, Host: 3000, HostIP: "127.0.0.1"}}
+	cfg.Seed = &SeedConfig{
+		Include:     []string{".env", "node_modules/**"},
+		Exclude:     []string{"node_modules/.cache/**"},
+		AllowRemove: true,
+	}
 	data, err := Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "seed:") || !strings.Contains(string(data), "allow_remove: true") {
+		t.Fatalf("seed section missing from marshal output:\n%s", data)
 	}
 	got, err := Parse(data)
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/config"
 	"github.com/daveagill/boxt/internal/git"
 	"github.com/daveagill/boxt/internal/lima"
 	"github.com/daveagill/boxt/internal/project"
@@ -63,6 +63,10 @@ type Manager struct {
 	ProjectID   string
 	HostRoot    string
 	Git         *git.Client
+
+	// copier overrides the seeding copy engine in tests; nil uses the
+	// production reflink/byte-copy engine.
+	copier *seedCopier
 }
 
 // New returns a workspace manager. HostRoot is the project-scoped directory
@@ -552,112 +556,29 @@ func (m *Manager) isAncestor(ctx context.Context, root, ancestor, descendant str
 	return fmt.Errorf("check fast-forward ancestry: %w", err)
 }
 
-// SeedResult reports ignored files copied from the default workspace.
-type SeedResult struct {
-	Copied    int
-	Conflicts []string
-	Skipped   []string
+// RemoveOptions controls safety checks for RemoveWithOptions.
+type RemoveOptions struct {
+	// Force discards uncommitted changes and ignored files.
+	Force bool
+	// Seed supplies the configured seed include/exclude rules and allow_remove
+	// policy evaluated against the workspace's current ignored files.
+	Seed config.SeedConfig
 }
 
-// Seed copies ignored files from the default workspace into a named workspace.
-// It never copies tracked files, never overwrites an existing target path, and
-// never follows symlinks. Source directories/files that do not exist are simply
-// absent from Git's ignored-file list.
-func (m *Manager) Seed(ctx context.Context, name string) (SeedResult, error) {
-	if name == DefaultName {
-		return SeedResult{}, &ErrDefaultWorkspace{}
-	}
-	if err := ValidateName(name); err != nil {
-		return SeedResult{}, err
-	}
-	if _, err := m.repoRoot(ctx); err != nil {
-		return SeedResult{}, err
-	}
-	ws, err := m.Get(ctx, name)
-	if err != nil {
-		return SeedResult{}, err
-	}
-	out, err := m.Git.Output(ctx, m.ProjectRoot, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
-	if err != nil {
-		return SeedResult{}, fmt.Errorf("list ignored files: %w", err)
-	}
-	result := SeedResult{}
-	for _, rel := range strings.Split(out, "\x00") {
-		if rel == "" {
-			continue
-		}
-		clean := filepath.Clean(filepath.FromSlash(rel))
-		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			result.Skipped = append(result.Skipped, rel+": unsafe path")
-			continue
-		}
-		src := filepath.Join(m.ProjectRoot, clean)
-		dst := filepath.Join(ws.HostPath, clean)
-		if rel == "." || src == m.ProjectRoot {
-			continue
-		}
-		info, err := os.Lstat(src)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return SeedResult{}, fmt.Errorf("inspect ignored file %s: %w", rel, err)
-		}
-		mode := info.Mode()
-		if mode&os.ModeSymlink != 0 {
-			result.Skipped = append(result.Skipped, rel+": symlink skipped")
-			continue
-		}
-		if !mode.IsRegular() {
-			result.Skipped = append(result.Skipped, rel+": special file skipped")
-			continue
-		}
-		if _, err := os.Lstat(dst); err == nil {
-			result.Conflicts = append(result.Conflicts, rel)
-			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return SeedResult{}, fmt.Errorf("inspect seed destination %s: %w", rel, err)
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return SeedResult{}, fmt.Errorf("create seed directory for %s: %w", rel, err)
-		}
-		if err := copyFile(src, dst, mode.Perm()); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				result.Conflicts = append(result.Conflicts, rel)
-				continue
-			}
-			return SeedResult{}, fmt.Errorf("seed ignored file %s: %w", rel, err)
-		}
-		result.Copied++
-	}
-	return result, nil
-}
-
-func copyFile(src, dst string, perm os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dst)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(dst)
-		return err
-	}
-	return os.Chmod(dst, perm)
-}
-
-// Remove deletes a named worktree. Dirty worktrees require force. Branch refs
-// are always retained and the directory is never removed with a manual rm.
+// Remove deletes a named worktree using the default safety policy: dirty
+// worktrees and every ignored file require force. Branch refs are always
+// retained and the directory is never removed with a manual rm.
 func (m *Manager) Remove(ctx context.Context, name string, force bool) (Workspace, error) {
+	return m.RemoveWithOptions(ctx, name, RemoveOptions{Force: force})
+}
+
+// RemoveWithOptions deletes a named worktree. Dirty tracked and non-ignored
+// untracked files always require force. When Seed.AllowRemove is false, any
+// ignored file requires force. When it is true, ignored files are allowed only
+// if every one matches the current include/exclude rules; otherwise removal is
+// refused with the unmatched paths. Force remains the complete override. Branch
+// refs are always retained and the directory is never removed with a manual rm.
+func (m *Manager) RemoveWithOptions(ctx context.Context, name string, opts RemoveOptions) (Workspace, error) {
 	if name == DefaultName {
 		return Workspace{}, &ErrDefaultWorkspace{}
 	}
@@ -685,22 +606,14 @@ func (m *Manager) Remove(ctx context.Context, name string, force bool) (Workspac
 		return ws, nil
 	}
 
-	status, err := m.Git.Output(ctx, ws.HostPath, "status", "--porcelain", "--ignored=matching", "--ignore-submodules=none")
-	if err != nil {
-		return Workspace{}, fmt.Errorf("check workspace status: %w", err)
-	}
-	dirty, ignored := workspaceChanges(status)
-	if !force {
-		switch {
-		case dirty:
-			return Workspace{}, &ErrDirty{Name: name}
-		case ignored:
-			return Workspace{}, &ErrIgnoredFiles{Name: name}
+	if !opts.Force {
+		if err := m.checkRemovable(ctx, name, ws.HostPath, opts.Seed); err != nil {
+			return Workspace{}, err
 		}
 	}
 
 	args := []string{"worktree", "remove"}
-	if force {
+	if opts.Force {
 		args = append(args, "--force")
 	}
 	args = append(args, ws.HostPath)
@@ -714,6 +627,62 @@ func (m *Manager) Remove(ctx context.Context, name string, force bool) (Workspac
 		return Workspace{}, fmt.Errorf("Git removed the worktree metadata, but the directory still exists: %s\n\nboxt does not delete directories outside Git's worktree command", ws.HostPath)
 	}
 	return ws, nil
+}
+
+// checkRemovable enforces the non-force removal policy. Dirty tracked and
+// non-ignored untracked files always block. Ignored files block unless
+// allow_remove is set and every current ignored path matches the seed rules.
+func (m *Manager) checkRemovable(ctx context.Context, name, dir string, rules config.SeedConfig) error {
+	status, err := m.Git.Output(ctx, dir, "status", "--porcelain", "--ignore-submodules=none")
+	if err != nil {
+		return fmt.Errorf("check workspace status: %w", err)
+	}
+	if hasStatusChanges(status) {
+		return &ErrDirty{Name: name}
+	}
+
+	ignored, err := m.ignoredPaths(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if len(ignored) == 0 {
+		return nil
+	}
+	if !rules.AllowRemove {
+		return &ErrIgnoredFiles{Name: name}
+	}
+	matcher, err := newSeedMatcher(rules)
+	if err != nil {
+		return err
+	}
+	if unmatched := matcher.Unmatched(ignored); len(unmatched) > 0 {
+		return &ErrIgnoredFiles{Name: name, Paths: unmatched}
+	}
+	return nil
+}
+
+// ignoredPaths lists the workspace's Git-ignored files, relative to its root.
+func (m *Manager) ignoredPaths(ctx context.Context, dir string) ([]string, error) {
+	out, err := m.Git.Output(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("list ignored files: %w", err)
+	}
+	var paths []string
+	for _, rel := range strings.Split(out, "\x00") {
+		if rel != "" {
+			paths = append(paths, rel)
+		}
+	}
+	return paths, nil
+}
+
+func hasStatusChanges(status string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 type rawWorktree struct {
@@ -1005,20 +974,6 @@ func (e *ErrNotFastForward) Hint() string {
 	return "No refs were changed. Rebase or merge the branch manually with Git, or recreate the workspace from the current target branch."
 }
 
-func workspaceChanges(status string) (dirty, ignored bool) {
-	for _, line := range strings.Split(status, "\n") {
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "!!") {
-			ignored = true
-		} else {
-			dirty = true
-		}
-	}
-	return dirty, ignored
-}
-
 // ErrDirty refuses to delete uncommitted work.
 type ErrDirty struct{ Name string }
 
@@ -1030,13 +985,30 @@ func (e *ErrDirty) Hint() string {
 }
 
 // ErrIgnoredFiles refuses to delete ignored files such as .env or caches.
-type ErrIgnoredFiles struct{ Name string }
+// Paths is set when allow_remove is enabled but some ignored paths do not match
+// the configured include/exclude rules.
+type ErrIgnoredFiles struct {
+	Name  string
+	Paths []string
+}
 
 func (e *ErrIgnoredFiles) Error() string {
 	return fmt.Sprintf("Cannot remove workspace %s:\nit contains ignored files that would be deleted.", e.Name)
 }
 func (e *ErrIgnoredFiles) Hint() string {
+	if len(e.Paths) > 0 {
+		return fmt.Sprintf("These ignored paths do not match seed.include/seed.exclude:\n  %s\n\nNarrow seed.include or add seed.exclude patterns in .boxt/config.yaml, or use `boxt workspace remove %s --force` to discard them.",
+			formatIgnoredPaths(e.Paths), e.Name)
+	}
 	return fmt.Sprintf("Use `boxt workspace remove %s --force` to discard ignored files such as .env, caches or build output.", e.Name)
+}
+
+func formatIgnoredPaths(paths []string) string {
+	const max = 10
+	if len(paths) <= max {
+		return strings.Join(paths, "\n  ")
+	}
+	return strings.Join(paths[:max], "\n  ") + fmt.Sprintf("\n  ... and %d more", len(paths)-max)
 }
 
 // ErrLocked refuses to remove a Git-locked worktree.
