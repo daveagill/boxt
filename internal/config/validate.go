@@ -182,11 +182,48 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Hooks != nil {
+		for _, event := range []struct {
+			name string
+			set  HookSet
+		}{
+			{HookWorkspaceCreate, c.Hooks.WorkspaceCreate},
+			{HookWorkspaceMerge, c.Hooks.WorkspaceMerge},
+			{HookWorkspaceRemove, c.Hooks.WorkspaceRemove},
+		} {
+			validateHookSet(v, event.name, "pre", event.set.Pre)
+			validateHookSet(v, event.name, "post", event.set.Post)
+		}
+	}
+
 	if len(v.errs) == 0 {
 		return nil
 	}
 	sort.SliceStable(v.errs, func(i, j int) bool { return v.errs[i].Path < v.errs[j].Path })
 	return &ValidationError{Errors: v.errs}
+}
+
+func validateHookSet(v *validator, event, phase string, hooks []Hook) {
+	for i, hook := range hooks {
+		path := fmt.Sprintf("hooks.%s.%s[%d]", event, phase, i)
+		if len(hook.Command) == 0 {
+			v.add(path+".command", "must contain at least one argument")
+		} else {
+			for j, arg := range hook.Command {
+				if strings.ContainsRune(arg, 0) {
+					v.add(fmt.Sprintf("%s.command[%d]", path, j), "must not contain NUL")
+				}
+				if j == 0 && arg == "" {
+					v.add(path+".command[0]", "executable must not be empty")
+				}
+			}
+		}
+		switch hook.Where {
+		case "", HookWhereGuest, HookWhereHost:
+		default:
+			v.add(path+".where", "must be %q or %q", HookWhereGuest, HookWhereHost)
+		}
+	}
 }
 
 // MemoryBytes validates and converts a memory size such as 8GiB to bytes.

@@ -187,6 +187,23 @@ examples/node-app/        complete runnable example
 - Only boxt-created worktrees are managed. Do not treat unrelated manual Git
   worktrees as boxt workspaces.
 
+### Hooks
+
+- Lifecycle hooks are project-controlled code and are disabled until explicitly
+  trusted. Store a SHA-256 of the normalized hook config in the data dir keyed by
+  project ID; any hook change invalidates approval. Untrusted operations fail
+  before mutation and list the commands. `boxt hooks status|trust|clear` manage
+  approval. Hooks never run during `init` or `doctor`.
+- Events are workspace create/merge/remove, each with pre/post. Commands are argv
+  arrays; never build a shell string. Guest hooks use the shared executor and
+  toolchain env in the workspace guest path; host hooks use `command.Runner` with
+  the workspace host path as cwd (remove post runs in project root). Expose
+  `BOXT_PROJECT_ROOT`, `BOXT_WORKSPACE`, `BOXT_WORKSPACE_PATH`, `BOXT_GUEST_PATH`.
+- Pre-hook failure aborts the operation (create rolls back the new worktree and
+  only a newly-created branch). Post-hook failure reports failure but does not
+  undo a completed create/merge/remove. Apply a fixed generous timeout per hook.
+- `create --seed` runs after worktree creation and before hooks and `--run`.
+
 ### Project discovery
 
 - Find the nearest ancestor `.boxt/config.yaml`.

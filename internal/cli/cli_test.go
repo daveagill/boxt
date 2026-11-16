@@ -359,7 +359,7 @@ func TestHelp(t *testing.T) {
 	if code := Run(context.Background(), app, []string{"--help"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	for _, want := range []string{"init", "doctor", "version", "persistent Linux"} {
+	for _, want := range []string{"init", "doctor", "hooks", "version", "persistent Linux"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q:\n%s", want, out.String())
 		}

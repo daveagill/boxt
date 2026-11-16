@@ -88,6 +88,9 @@ func TestParseValidationErrors(t *testing.T) {
 		{"port env without base", "version: 1\nrun:\n  targets:\n    dev:\n      command: [\"npm\"]\n      port_env: PORT\n", "run.targets.dev.port_env", "requires port_base"},
 		{"invalid port env", "version: 1\nrun:\n  targets:\n    dev:\n      command: [\"npm\"]\n      port_base: 3000\n      port_env: \"BAD-NAME\"\n", "run.targets.dev.port_env", "invalid environment"},
 		{"unknown field", "version: 1\nvm:\n  bogus: true\n", "", "field bogus not found"},
+		{"unknown hook event", "version: 1\nhooks:\n  workspace_bogus:\n    pre: []\n", "", "field workspace_bogus not found"},
+		{"empty hook command", "version: 1\nhooks:\n  workspace_create:\n    pre:\n      - command: []\n", "hooks.workspace_create.pre[0].command", "at least one"},
+		{"invalid hook where", "version: 1\nhooks:\n  workspace_create:\n    post:\n      - command: [\"true\"]\n        where: cloud\n", "hooks.workspace_create.post[0].where", "must be"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -308,6 +311,38 @@ run:
 	target := cfg.Run.Targets["dev"]
 	if target.PortBase != 3000 || target.PortEnv != "APP_PORT" {
 		t.Fatalf("target = %#v", target)
+	}
+}
+
+func TestParseHooksDefaultsToGuest(t *testing.T) {
+	cfg, err := Parse([]byte(`version: 1
+hooks:
+  workspace_create:
+    pre:
+      - command: ["npm", "install"]
+    post:
+      - command: ["git", "status", "--short"]
+        where: host
+  workspace_merge:
+    post:
+      - command: ["echo", "merged"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HasHooks() {
+		t.Fatal("hooks not detected")
+	}
+	create := cfg.HooksFor(HookWorkspaceCreate)
+	if create.Pre[0].Where != HookWhereGuest || create.Post[0].Where != HookWhereHost {
+		t.Fatalf("where defaults wrong: %#v", create)
+	}
+	merge := cfg.HooksFor(HookWorkspaceMerge)
+	if len(merge.Post) != 1 || merge.Post[0].Where != HookWhereGuest {
+		t.Fatalf("merge hooks = %#v", merge)
+	}
+	if got := cfg.HooksFor("unknown"); len(got.Pre) != 0 || len(got.Post) != 0 {
+		t.Fatalf("unknown event = %#v", got)
 	}
 }
 

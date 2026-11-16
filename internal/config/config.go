@@ -41,6 +41,64 @@ type Config struct {
 	VM      VMConfig          `yaml:"vm"`
 	Tools   map[string]string `yaml:"tools,omitempty"`
 	Run     RunConfig         `yaml:"run"`
+	Hooks   *HooksConfig      `yaml:"hooks,omitempty"`
+}
+
+// Hook lifecycle events.
+const (
+	HookWorkspaceCreate = "workspace_create"
+	HookWorkspaceMerge  = "workspace_merge"
+	HookWorkspaceRemove = "workspace_remove"
+
+	HookWhereGuest = "guest"
+	HookWhereHost  = "host"
+)
+
+// HooksConfig holds pre/post hooks for workspace lifecycle events.
+type HooksConfig struct {
+	WorkspaceCreate HookSet `yaml:"workspace_create,omitempty"`
+	WorkspaceMerge  HookSet `yaml:"workspace_merge,omitempty"`
+	WorkspaceRemove HookSet `yaml:"workspace_remove,omitempty"`
+}
+
+// HookSet is the pre/post pair for one event.
+type HookSet struct {
+	Pre  []Hook `yaml:"pre,omitempty"`
+	Post []Hook `yaml:"post,omitempty"`
+}
+
+// Hook is one argv command run on the host or in the guest.
+type Hook struct {
+	Command []string `yaml:"command"`
+	Where   string   `yaml:"where,omitempty"`
+}
+
+// HooksFor returns the hook set for an event. Unknown events return an empty set.
+func (c *Config) HooksFor(event string) HookSet {
+	if c == nil || c.Hooks == nil {
+		return HookSet{}
+	}
+	switch event {
+	case HookWorkspaceCreate:
+		return c.Hooks.WorkspaceCreate
+	case HookWorkspaceMerge:
+		return c.Hooks.WorkspaceMerge
+	case HookWorkspaceRemove:
+		return c.Hooks.WorkspaceRemove
+	default:
+		return HookSet{}
+	}
+}
+
+// HasHooks reports whether any lifecycle hooks are configured.
+func (c *Config) HasHooks() bool {
+	for _, event := range []string{HookWorkspaceCreate, HookWorkspaceMerge, HookWorkspaceRemove} {
+		set := c.HooksFor(event)
+		if len(set.Pre) > 0 || len(set.Post) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // VMConfig describes the persistent project VM.
@@ -156,6 +214,24 @@ func (c *Config) ApplyDefaults() {
 	for i := range c.VM.Ports {
 		if c.VM.Ports[i].HostIP == "" {
 			c.VM.Ports[i].HostIP = "127.0.0.1"
+		}
+	}
+	if c.Hooks != nil {
+		normalizeHooks(c.Hooks)
+	}
+}
+
+func normalizeHooks(h *HooksConfig) {
+	for _, set := range []*HookSet{&h.WorkspaceCreate, &h.WorkspaceMerge, &h.WorkspaceRemove} {
+		for i := range set.Pre {
+			if set.Pre[i].Where == "" {
+				set.Pre[i].Where = HookWhereGuest
+			}
+		}
+		for i := range set.Post {
+			if set.Post[i].Where == "" {
+				set.Post[i].Where = HookWhereGuest
+			}
 		}
 	}
 }

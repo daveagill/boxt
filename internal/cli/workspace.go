@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/daveagill/boxt/internal/config"
 	"github.com/daveagill/boxt/internal/project"
 	"github.com/daveagill/boxt/internal/workspace"
 )
@@ -78,6 +79,9 @@ func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget strin
 	if err != nil {
 		return err
 	}
+	if err := a.ensureHooksTrusted(p, config.HookWorkspaceCreate); err != nil {
+		return err
+	}
 	ws, err := mgr.Create(ctx, name, branch)
 	if err != nil {
 		return err
@@ -93,11 +97,24 @@ func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget strin
 		}
 		a.printSeedResult(result)
 	}
-	if runTarget == "" {
-		return nil
+	allowStart := !noStart && p.Config.VM.AutoStartEnabled()
+	if err := a.runHookPhase(ctx, p, config.HookWorkspaceCreate, "pre", ws, allowStart, false); err != nil {
+		rollbackErr := mgr.Rollback(ctx, ws)
+		if rollbackErr != nil {
+			return fmt.Errorf("workspace create aborted by pre-hook: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("workspace create aborted by pre-hook: %w", err)
 	}
-	fmt.Fprintf(a.Out, "Running target %s in workspace %s...\n", runTarget, ws.Name)
-	return a.execute(ctx, p, ws.Name, ws.GuestPath, inv, !noStart && p.Config.VM.AutoStartEnabled())
+	if runTarget != "" {
+		fmt.Fprintf(a.Out, "Running target %s in workspace %s...\n", runTarget, ws.Name)
+		if err := a.execute(ctx, p, ws.Name, ws.GuestPath, inv, allowStart); err != nil {
+			return err
+		}
+	}
+	if err := a.runHookPhase(ctx, p, config.HookWorkspaceCreate, "post", ws, allowStart, false); err != nil {
+		return reportPostError(err)
+	}
+	return nil
 }
 
 func newWorkspaceListCmd(app *App) *cobra.Command {
@@ -227,7 +244,23 @@ func (a *App) workspaceMerge(ctx context.Context, name, into string, remove bool
 	if err != nil {
 		return err
 	}
-	result, err := mgr.Merge(ctx, name, into, remove)
+	if err := a.ensureHooksTrusted(p, config.HookWorkspaceMerge); err != nil {
+		return err
+	}
+	if remove {
+		if err := a.ensureHooksTrusted(p, config.HookWorkspaceRemove); err != nil {
+			return err
+		}
+	}
+	ws, err := mgr.Get(ctx, name)
+	if err != nil {
+		return err
+	}
+	allowStart := p.Config.VM.AutoStartEnabled()
+	if err := a.runHookPhase(ctx, p, config.HookWorkspaceMerge, "pre", ws, allowStart, false); err != nil {
+		return fmt.Errorf("workspace merge aborted by pre-hook: %w", err)
+	}
+	result, err := mgr.Merge(ctx, name, into, false)
 	if err != nil {
 		return err
 	}
@@ -237,13 +270,20 @@ func (a *App) workspaceMerge(ctx context.Context, name, into string, remove bool
 		fmt.Fprintf(a.Out, "Fast-forwarded %s to %s.\n", result.TargetBranch, result.SourceBranch)
 		fmt.Fprintf(a.Out, "  HEAD: %s -> %s\n", shortHead(result.OldHead), shortHead(result.NewHead))
 	}
-	if remove {
-		if result.Removed {
-			fmt.Fprintf(a.Out, "Removed workspace %s.\n", result.Workspace.Name)
-			fmt.Fprintf(a.Out, "Git branch %s was kept.\n", result.SourceBranch)
-		} else if result.RemoveErr != nil {
-			fmt.Fprintf(a.Err, "Warning: merge succeeded, but workspace %s was kept: %v\n", result.Workspace.Name, result.RemoveErr)
+	if err := a.runHookPhase(ctx, p, config.HookWorkspaceMerge, "post", ws, allowStart, false); err != nil {
+		return reportPostError(err)
+	}
+	if !remove {
+		return nil
+	}
+	if err := a.workspaceRemove(ctx, name, false); err != nil {
+		var ignored *workspace.ErrIgnoredFiles
+		var dirty *workspace.ErrDirty
+		if errors.As(err, &ignored) || errors.As(err, &dirty) {
+			fmt.Fprintf(a.Err, "Warning: merge succeeded, but workspace %s was kept: %v\n", name, err)
+			return nil
 		}
+		return err
 	}
 	return nil
 }
@@ -279,17 +319,39 @@ func (a *App) workspaceRemove(ctx context.Context, name string, force bool) erro
 	if err != nil {
 		return err
 	}
-	ws, err := mgr.Remove(ctx, name, force)
+	if err := a.ensureHooksTrusted(p, config.HookWorkspaceRemove); err != nil {
+		return err
+	}
+	set := p.Config.HooksFor(config.HookWorkspaceRemove)
+	hasHooks := len(set.Pre) > 0 || len(set.Post) > 0
+	var ws workspace.Workspace
+	if hasHooks {
+		ws, err = mgr.Get(ctx, name)
+		if err != nil {
+			return err
+		}
+		allowStart := p.Config.VM.AutoStartEnabled()
+		if err := a.runHookPhase(ctx, p, config.HookWorkspaceRemove, "pre", ws, allowStart, false); err != nil {
+			return fmt.Errorf("workspace remove aborted by pre-hook: %w", err)
+		}
+	}
+	removed, err := mgr.Remove(ctx, name, force)
 	if err != nil {
 		return err
 	}
-	if ws.Missing {
-		fmt.Fprintf(a.Out, "Pruned stale workspace metadata for %s.\n", ws.Name)
+	if removed.Missing {
+		fmt.Fprintf(a.Out, "Pruned stale workspace metadata for %s.\n", removed.Name)
 		return nil
 	}
-	fmt.Fprintf(a.Out, "Removed workspace %s.\n", ws.Name)
-	if ws.Branch != "" {
-		fmt.Fprintf(a.Out, "Git branch %s was kept.\n", ws.Branch)
+	fmt.Fprintf(a.Out, "Removed workspace %s.\n", removed.Name)
+	if removed.Branch != "" {
+		fmt.Fprintf(a.Out, "Git branch %s was kept.\n", removed.Branch)
+	}
+	if hasHooks {
+		allowStart := p.Config.VM.AutoStartEnabled()
+		if err := a.runHookPhase(ctx, p, config.HookWorkspaceRemove, "post", removed, allowStart, true); err != nil {
+			return reportPostError(err)
+		}
 	}
 	return nil
 }

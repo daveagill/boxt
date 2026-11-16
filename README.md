@@ -509,6 +509,55 @@ worktrees are left alone.
 Named workspaces require the project root to be the Git repository root. An empty
 repository with no commits is supported using an orphan branch (Git 2.42+).
 
+## Lifecycle hooks
+
+Projects can run pre/post hooks for workspace create, merge and remove:
+
+```yaml
+hooks:
+  workspace_create:
+    pre:
+      - command: ["npm", "install"]
+    post:
+      - command: ["git", "status", "--short"]
+        where: host
+  workspace_merge:
+    pre: []
+    post: []
+  workspace_remove:
+    pre: []
+    post: []
+```
+
+`where` is `guest` (default) or `host`. Guest hooks run through the same executor
+as run targets, with the shared toolchain environment and the workspace guest path
+as the working directory; they may auto-up/provision the VM like any execution.
+Host hooks run as your host user via the normal command runner. Commands are argv
+arrays and are never passed through a shell. Hooks receive `BOXT_PROJECT_ROOT`,
+`BOXT_WORKSPACE`, `BOXT_WORKSPACE_PATH` and `BOXT_GUEST_PATH`. Each hook has a
+generous fixed timeout.
+
+A pre-hook failure aborts the operation. A post-hook failure is reported without
+undoing a completed create, merge or remove. Remove post-hooks run in the project
+root because the workspace path is gone. `workspace create --seed` seeds ignored
+files before hooks and `--run`.
+
+Hooks are arbitrary project-controlled code, so boxt does not run them until you
+approve the current configuration:
+
+```bash
+boxt hooks status   # show commands and trust state
+boxt hooks trust    # approve the current hook hash
+boxt hooks clear    # remove approval
+```
+
+The approval is a SHA-256 of the normalized hook configuration, stored in the
+boxt data directory per project. Changing any hook command or location
+invalidates it. Untrusted operations fail before creating, merging or removing
+anything and list the commands that need review. Hooks never run during
+`boxt init` or `boxt doctor`. Guest hooks run as the `boxt` user; host hooks run
+with your host user's permissions.
+
 ## Port forwarding
 
 `vm.port_forwarding` controls exposure:
@@ -587,6 +636,9 @@ offsets are an execution-time convention, not extra VM configuration, so changin
   in its home directory.
 - Ordinary development commands run as the non-root `boxt` user. Passwordless
   sudo is available only for provisioning and system administration.
+- Lifecycle hooks are project-controlled code. They require explicit approval via
+  `boxt hooks trust`, and changing the hook configuration invalidates approval.
+  Guest hooks run as `boxt`; host hooks run as your host user.
 
 ## Troubleshooting
 

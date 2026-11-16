@@ -52,6 +52,9 @@ type Workspace struct {
 	Ahead      int
 	Behind     int
 	Compared   bool
+	// NewBranch is set only on the result of Create when the branch did not
+	// exist before. It lets callers roll back setup failures safely.
+	NewBranch bool
 }
 
 // Manager operates on one project's named workspaces.
@@ -393,7 +396,31 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (Workspace, e
 		Branch:    branch,
 		HostPath:  path,
 		GuestPath: m.GuestPath(name),
+		NewBranch: createdBranch,
 	}, nil
+}
+
+// Rollback removes a worktree created by Create and deletes its branch only when
+// Create created that branch. It is used when post-create setup such as a
+// pre-hook fails.
+func (m *Manager) Rollback(ctx context.Context, ws Workspace) error {
+	root, err := m.repoRoot(ctx)
+	if err != nil {
+		return err
+	}
+	if ws.HostPath != "" {
+		if _, statErr := os.Stat(ws.HostPath); statErr == nil {
+			if _, err := m.Git.Output(ctx, root, "worktree", "remove", "--force", ws.HostPath); err != nil && !isGoneWorktree(err) {
+				return fmt.Errorf("roll back worktree %s: %w", ws.HostPath, err)
+			}
+		}
+	}
+	if ws.NewBranch && ws.Branch != "" {
+		if _, err := m.Git.Output(ctx, root, "branch", "-D", ws.Branch); err != nil {
+			return fmt.Errorf("roll back branch %s: %w", ws.Branch, err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) rollbackCreated(ctx context.Context, root, path, branch string, createdBranch bool, cause error) (Workspace, error) {
