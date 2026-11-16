@@ -72,10 +72,7 @@ func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget strin
 		if !ok {
 			return &unknownTargetError{Name: runTarget, CommandPrefix: "boxt workspace create " + name + " --run"}
 		}
-		inv = invocation{
-			Command:     append([]string(nil), target.Command...),
-			Interactive: target.Interactive,
-		}
+		inv = targetInvocation(target)
 	}
 	mgr, _, err := a.workspaceManager(p)
 	if err != nil {

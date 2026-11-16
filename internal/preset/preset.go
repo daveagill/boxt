@@ -151,6 +151,8 @@ func clone(p Preset) Preset {
 		out.Targets[k] = config.RunTarget{
 			Command:     append([]string(nil), v.Command...),
 			Interactive: v.Interactive,
+			PortBase:    v.PortBase,
+			PortEnv:     v.PortEnv,
 		}
 	}
 	out.Ports = append([]config.PortForward(nil), p.Ports...)

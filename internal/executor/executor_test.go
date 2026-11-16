@@ -201,6 +201,21 @@ func TestExecutorNoGuest(t *testing.T) {
 	}
 }
 
+func TestWithEnv(t *testing.T) {
+	argv := []string{"npm", "run", "dev"}
+	got := WithEnv(argv, "PORT=3000")
+	want := []string{"/usr/bin/env", "PORT=3000", "npm", "run", "dev"}
+	if !equal(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+	if !equal(argv, []string{"npm", "run", "dev"}) {
+		t.Fatalf("WithEnv mutated its input: %#v", argv)
+	}
+	if got := WithEnv(argv); !equal(got, argv) {
+		t.Fatalf("empty env changed argv: %#v", got)
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

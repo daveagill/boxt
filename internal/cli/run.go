@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +18,8 @@ import (
 type invocation struct {
 	Command     []string
 	Interactive bool
+	PortBase    int
+	PortEnv     string
 }
 
 func newRunCmd(app *App) *cobra.Command {
@@ -54,6 +57,25 @@ func (a *App) run(ctx context.Context, args []string, dash int, noStart bool) er
 // execute is the single CLI path that starts the VM when allowed and runs a
 // request through the shared executor.
 func (a *App) execute(ctx context.Context, p *project.Project, workspace, workDir string, inv invocation, allowStart bool) error {
+	if inv.PortBase > 0 {
+		mgr, _, err := a.workspaceManager(p)
+		if err != nil {
+			return err
+		}
+		offset, err := mgr.PortOffsetFor(ctx, workspace)
+		if err != nil {
+			return err
+		}
+		guestPort := inv.PortBase + offset
+		if guestPort > 65535 {
+			return fmt.Errorf("guest port %d for workspace %s exceeds 65535", guestPort, workspace)
+		}
+		envName := inv.PortEnv
+		if envName == "" {
+			envName = "PORT"
+		}
+		inv.Command = executor.WithEnv(inv.Command, envName+"="+strconv.Itoa(guestPort))
+	}
 	if inv.Interactive && !isTerminal(a.Out) {
 		fmt.Fprintln(a.Err, "Warning: interactive target requested, but stdout is not a terminal; the guest will not receive a PTY.")
 	}
@@ -153,10 +175,9 @@ func resolveRun(cfg *config.Config, args []string, dash int, terminal bool, comm
 		}
 		command := append([]string(nil), target.Command...)
 		command = append(command, args[dash:]...)
-		return invocation{
-			Command:     command,
-			Interactive: target.Interactive,
-		}, nil
+		inv := targetInvocation(target)
+		inv.Command = command
+		return inv, nil
 	}
 	switch len(args) {
 	case 0:
@@ -170,19 +191,13 @@ func resolveRun(cfg *config.Config, args []string, dash int, terminal bool, comm
 				CommandPrefix: commandPrefix,
 			}
 		}
-		return invocation{
-			Command:     append([]string(nil), target.Command...),
-			Interactive: target.Interactive,
-		}, nil
+		return targetInvocation(target), nil
 	case 1:
 		target, ok := cfg.ResolveTarget(args[0])
 		if !ok {
 			return invocation{}, &unknownTargetError{Name: args[0], CommandPrefix: commandPrefix}
 		}
-		return invocation{
-			Command:     append([]string(nil), target.Command...),
-			Interactive: target.Interactive,
-		}, nil
+		return targetInvocation(target), nil
 	default:
 		prefix := commandPrefix
 		if prefix == "" {
@@ -192,6 +207,15 @@ func resolveRun(cfg *config.Config, args []string, dash int, terminal bool, comm
 			"unexpected arguments: %v\n\nUse `%s <target>` for a named target, `%s <target> -- <args...>` to pass arguments, or `%s -- <command> [args...]` for an arbitrary command",
 			args[1:], prefix, prefix, prefix,
 		)
+	}
+}
+
+func targetInvocation(target config.RunTarget) invocation {
+	return invocation{
+		Command:     append([]string(nil), target.Command...),
+		Interactive: target.Interactive,
+		PortBase:    target.PortBase,
+		PortEnv:     target.PortEnv,
 	}
 }
 

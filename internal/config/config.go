@@ -71,6 +71,10 @@ type RunConfig struct {
 type RunTarget struct {
 	Command     []string `yaml:"command"`
 	Interactive bool     `yaml:"interactive,omitempty"`
+	// PortBase, when set, asks boxt to inject PortEnv with a deterministic
+	// per-workspace offset applied. The guest service must honor the variable.
+	PortBase int    `yaml:"port_base,omitempty"`
+	PortEnv  string `yaml:"port_env,omitempty"`
 }
 
 // Default returns a fully populated default configuration.

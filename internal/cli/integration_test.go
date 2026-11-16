@@ -128,6 +128,33 @@ func TestIntegrationInteractivePTYAndExitStatus(t *testing.T) {
 	if !strings.Contains(out, "/workspace") {
 		t.Fatalf("shell did not start in /workspace:\n%s", out)
 	}
+
+	cfg := `version: 1
+run:
+  targets:
+    port:
+      command: ["/bin/sh", "-c", "printf '%s' \"$PORT\""]
+      port_base: 3000
+    args:
+      command: ["/bin/sh", "-c", "printf '%s' \"$1\"", "--"]
+`
+	if err := os.WriteFile(filepath.Join(projectDir, project.ConfigRelPath), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runInPTY(t, bin, projectDir, []string{"run", "port"}, "")
+	if code != 0 {
+		t.Fatalf("port target exit %d; output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "3000") {
+		t.Fatalf("port environment not injected:\n%s", out)
+	}
+	out, code = runInPTY(t, bin, projectDir, []string{"run", "args", "--", "hello"}, "")
+	if code != 0 {
+		t.Fatalf("target args exit %d; output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "hello") {
+		t.Fatalf("target arguments not passed through:\n%s", out)
+	}
 }
 
 func runInPTY(t *testing.T, bin, dir string, args []string, input string) (string, int) {

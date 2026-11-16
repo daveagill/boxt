@@ -124,6 +124,11 @@ examples/node-app/        complete runnable example
   status. Do not leak full internal `limactl` argv into normal errors.
 - `interactive: true` needs a host terminal for a guest PTY; warn when stdout is
   redirected.
+- Per-workspace ports: `port_base` plus a deterministic offset (default workspace
+  0, named workspaces 1–999 from project ID + name) is injected as `port_env`
+  (default `PORT`) through `/usr/bin/env`, never by rewriting argv or using a
+  shell. Reject offset collisions at execution time. `auto` forwarding exposes
+  the same host port; `explicit` requires matching `vm.ports` entries.
 
 ### Toolchain
 

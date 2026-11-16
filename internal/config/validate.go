@@ -13,8 +13,13 @@ var (
 	toolNameRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]*$`)
 	toolVersionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 	targetNameRE  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	portEnvRE     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	memoryRE      = regexp.MustCompile(`^([1-9][0-9]*)(MiB|GiB)$`)
 )
+
+// MaxPortBase is the highest port_base that still leaves room for every
+// per-workspace offset without exceeding port 65535.
+const MaxPortBase = 65535 - 999
 
 // FieldError is one validation failure with a stable field path.
 type FieldError struct {
@@ -154,6 +159,19 @@ func (c *Config) Validate() error {
 				if i == 0 && arg == "" {
 					v.add(path+".command[0]", "executable must not be empty")
 				}
+			}
+		}
+		if target.PortBase < 0 {
+			v.add(path+".port_base", "must be between 1 and %d", MaxPortBase)
+		} else if target.PortBase > MaxPortBase {
+			v.add(path+".port_base", "must be between 1 and %d so per-workspace offsets stay below port 65535", MaxPortBase)
+		}
+		if target.PortEnv != "" {
+			if target.PortBase == 0 {
+				v.add(path+".port_env", "requires port_base")
+			}
+			if !portEnvRE.MatchString(target.PortEnv) {
+				v.add(path+".port_env", "invalid environment variable name %q", target.PortEnv)
 			}
 		}
 	}

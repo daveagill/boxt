@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/daveagill/boxt/internal/config"
 	"github.com/daveagill/boxt/internal/project"
 	"github.com/daveagill/boxt/internal/toolchain"
+	"github.com/daveagill/boxt/internal/workspace"
 )
 
 func (f *lifecycleFixture) writeConfig(t *testing.T, body string) {
@@ -65,6 +67,19 @@ run:
       command: ["npm", "run", "dev"]
     test:
       command: ["npm", "test"]
+`
+
+const portConfig = `version: 1
+run:
+  default: dev
+  targets:
+    dev:
+      command: ["npm", "run", "dev"]
+      port_base: 3000
+    web:
+      command: ["npm", "run", "web"]
+      port_base: 5000
+      port_env: APP_PORT
 `
 
 func TestRunDefaultTarget(t *testing.T) {
@@ -639,6 +654,75 @@ func TestUnexpectedArgumentsWorkspaceHint(t *testing.T) {
 	_, err := resolveRun(cfg, []string{"dev", "extra"}, -1, false, "boxt workspace run feature-a")
 	if err == nil || !strings.Contains(err.Error(), "boxt workspace run feature-a <target>") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunPortBaseDefaultWorkspace(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, portConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "run", "dev"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	want := []string{"--", "/usr/bin/env", "PORT=3000", "npm", "run", "dev"}
+	if !endsWith(f.shellCommand(t).Args, want) {
+		t.Fatalf("args = %#v, want tail %#v", f.shellCommand(t).Args, want)
+	}
+}
+
+func TestRunPortEnvCustom(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, portConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "run", "web"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	want := []string{"--", "/usr/bin/env", "APP_PORT=5000", "npm", "run", "web"}
+	if !endsWith(f.shellCommand(t).Args, want) {
+		t.Fatalf("args = %#v, want tail %#v", f.shellCommand(t).Args, want)
+	}
+}
+
+func TestRunPortBaseNamedWorkspace(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, portConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "agent-1"); code != 0 {
+		t.Fatalf("create failed: %s", f.errOut.String())
+	}
+	if code := f.run(t, "workspace", "run", "agent-1", "dev"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	port := 3000 + workspace.PortOffset(f.project.ID, "agent-1")
+	want := []string{"--", "/usr/bin/env", "PORT=" + strconv.Itoa(port), "npm", "run", "dev"}
+	if !endsWith(f.shellCommand(t).Args, want) {
+		t.Fatalf("args = %#v, want tail %#v", f.shellCommand(t).Args, want)
+	}
+}
+
+func TestRunPortBaseWithTargetArguments(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, portConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "run", "dev", "--", "--host", "0.0.0.0"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	want := []string{"--", "/usr/bin/env", "PORT=3000", "npm", "run", "dev", "--host", "0.0.0.0"}
+	if !endsWith(f.shellCommand(t).Args, want) {
+		t.Fatalf("args = %#v, want tail %#v", f.shellCommand(t).Args, want)
+	}
+}
+
+func TestResolveRunPortFields(t *testing.T) {
+	cfg := &config.Config{Run: config.RunConfig{Targets: map[string]config.RunTarget{
+		"dev": {Command: []string{"npm", "run", "dev"}, PortBase: 3000, PortEnv: "APP_PORT"},
+	}}}
+	inv, err := resolveRun(cfg, []string{"dev"}, -1, false, "boxt run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.PortBase != 3000 || inv.PortEnv != "APP_PORT" {
+		t.Fatalf("invocation = %#v", inv)
 	}
 }
 

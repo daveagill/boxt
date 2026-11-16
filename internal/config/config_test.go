@@ -83,6 +83,10 @@ func TestParseValidationErrors(t *testing.T) {
 		{"empty command", "version: 1\nrun:\n  targets:\n    dev:\n      command: []\n", "run.targets.dev.command", "at least one"},
 		{"empty executable", "version: 1\nrun:\n  targets:\n    dev:\n      command: [\"\"]\n", "run.targets.dev.command[0]", "must not be empty"},
 		{"unknown default", "version: 1\nrun:\n  default: nope\n  targets: {}\n", "run.default", "unknown target"},
+		{"negative port base", "version: 1\nrun:\n  targets:\n    dev:\n      command: [\"npm\"]\n      port_base: -1\n", "run.targets.dev.port_base", "between"},
+		{"port base overflow", "version: 1\nrun:\n  targets:\n    dev:\n      command: [\"npm\"]\n      port_base: 65000\n", "run.targets.dev.port_base", "port 65535"},
+		{"port env without base", "version: 1\nrun:\n  targets:\n    dev:\n      command: [\"npm\"]\n      port_env: PORT\n", "run.targets.dev.port_env", "requires port_base"},
+		{"invalid port env", "version: 1\nrun:\n  targets:\n    dev:\n      command: [\"npm\"]\n      port_base: 3000\n      port_env: \"BAD-NAME\"\n", "run.targets.dev.port_env", "invalid environment"},
 		{"unknown field", "version: 1\nvm:\n  bogus: true\n", "", "field bogus not found"},
 	}
 	for _, tt := range tests {
@@ -286,6 +290,24 @@ func TestAddToolInvalidLeavesFileUnchanged(t *testing.T) {
 		if strings.Contains(e.Name(), ".tmp-") {
 			t.Fatalf("temporary file left behind: %s", e.Name())
 		}
+	}
+}
+
+func TestParsePortTarget(t *testing.T) {
+	cfg, err := Parse([]byte(`version: 1
+run:
+  targets:
+    dev:
+      command: ["npm", "run", "dev"]
+      port_base: 3000
+      port_env: APP_PORT
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := cfg.Run.Targets["dev"]
+	if target.PortBase != 3000 || target.PortEnv != "APP_PORT" {
+		t.Fatalf("target = %#v", target)
 	}
 }
 

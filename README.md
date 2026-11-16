@@ -289,6 +289,8 @@ run:
   targets:
     dev:
       command: ["npm", "run", "dev"]
+      port_base: 3000
+      port_env: PORT       # default when port_base is set
     test:
       command: ["npm", "test"]
     codex:
@@ -541,6 +543,35 @@ configuration is applied when the VM is created, so changing `vm.ports` or
 
 On WSL2, forwards bind inside the WSL VM; reaching them from Windows also depends
 on WSL `localhostForwarding`, firewall and VPN configuration.
+
+### Per-workspace ports
+
+Targets that start a server can declare `port_base`. boxt adds a deterministic
+per-workspace offset and injects the resulting guest port through an environment
+variable, so parallel workspaces do not collide:
+
+```yaml
+run:
+  targets:
+    dev:
+      command: ["npm", "run", "dev"]
+      port_base: 3000
+      port_env: PORT   # optional; defaults to PORT
+```
+
+The default workspace uses offset 0, so `dev` receives `PORT=3000`. Named
+workspaces use a stable 1–999 offset derived from the project ID and workspace
+name. A collision between current workspace offsets is an error; rename a
+workspace or choose a different `port_base`. boxt only sets the environment
+variable; the service must honor it (Vite reads `PORT`, Node servers usually read
+`process.env.PORT`, Python apps can read `os.environ["PORT"]`). boxt does not
+rewrite arbitrary command arguments.
+
+In `auto` forwarding mode the guest port is reachable on the same host port. In
+`explicit` mode, add a matching `vm.ports` mapping for every possible
+`port_base + offset` you need; otherwise the service remains guest-only. Port
+offsets are an execution-time convention, not extra VM configuration, so changing
+`port_base` does not require recreating the VM.
 
 ## Security limitations
 

@@ -95,6 +95,18 @@ func (e *Executor) Execute(ctx context.Context, req Request) error {
 	})
 }
 
+// WithEnv prefixes argv with /usr/bin/env assignments. It never constructs a
+// shell string and leaves the original slice untouched.
+func WithEnv(argv []string, assignments ...string) []string {
+	if len(assignments) == 0 {
+		return argv
+	}
+	out := make([]string, 0, 1+len(assignments)+len(argv))
+	out = append(out, "/usr/bin/env")
+	out = append(out, assignments...)
+	return append(out, argv...)
+}
+
 func commandError(argv []string, err error) error {
 	display := strings.Join(argv, " ")
 	if display == "" {
