@@ -13,11 +13,21 @@ The server listens on port 3000 inside the VM. With the default
 
 ```bash
 boxt run test
-boxt workspace create feature-a
-boxt workspace run feature-a test
-boxt workspace run feature-a codex
 boxt down
 ```
 
 `codex` is configured as an interactive target. Add `opencode` or another agent
 the same way if it is installed in the VM.
+
+Named workspaces require the project root to be the Git repository root. This
+example lives inside the boxt repository, so copy it into its own Git repository
+to try workspaces:
+
+```bash
+cp -R examples/node-app ~/projects/node-app
+cd ~/projects/node-app
+git init && git add . && git commit -m "Initial commit"
+boxt workspace create feature-a
+boxt workspace run feature-a test
+boxt workspace run feature-a codex
+```

@@ -6,7 +6,8 @@ boxt is a local-first development environment manager: one persistent Ubuntu
 24.04 VM per project, a shared mise-managed toolchain, and multiple independent
 Git worktrees ("workspaces") mounted into that VM. Agent sandboxing is the
 headline use case; the generic run-target/workspace model is the foundation.
-The user-facing documentation is in `README.md`; this file records invariants
+The user-facing documentation starts in `README.md`, with deeper reference under
+`docs/`; this file records invariants
 and workflows that must not be broken accidentally.
 
 ## Quick commands
@@ -40,6 +41,7 @@ internal/workspace/       Git worktree create/list/remove, names/paths
 internal/toolchain/       mise installation, reconciliation, tool status
 internal/cli/             Cobra commands and wiring; presentation only
 examples/node-app/        complete runnable example
+docs/                     deeper reference (troubleshooting)
 ```
 
 ## Non-negotiable invariants

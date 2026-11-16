@@ -214,6 +214,8 @@ version: 1
 
 vm:
   image: ubuntu-24.04
+  # guest CPUs and memory; applied when the VM is created, so change them by
+  # running "boxt destroy" then "boxt up"
   cpus: 4
   memory: 8GiB
   # auto: forward guest loopback services to host loopback (vite, servers)
