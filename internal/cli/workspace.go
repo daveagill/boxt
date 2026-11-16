@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"text/tabwriter"
 
@@ -23,6 +24,7 @@ func newWorkspaceCmd(app *App) *cobra.Command {
 	cmd.AddCommand(newWorkspaceCreateCmd(app))
 	cmd.AddCommand(newWorkspaceListCmd(app))
 	cmd.AddCommand(newWorkspaceMergeCmd(app))
+	cmd.AddCommand(newWorkspaceRebaseCmd(app))
 	cmd.AddCommand(newWorkspaceRemoveCmd(app))
 	cmd.AddCommand(newWorkspacePathCmd(app))
 	cmd.AddCommand(newWorkspaceRunCmd(app))
@@ -245,6 +247,12 @@ func workspaceAheadBehind(ws workspace.Workspace) string {
 }
 
 func workspaceStatus(ws workspace.Workspace) string {
+	switch ws.Operation {
+	case "rebase":
+		return "rebasing"
+	case "merge", "cherry-pick":
+		return ws.Operation + " in progress"
+	}
 	switch {
 	case ws.Missing:
 		return "missing"
@@ -260,26 +268,35 @@ func workspaceStatus(ws workspace.Workspace) string {
 func newWorkspaceMergeCmd(app *App) *cobra.Command {
 	var into string
 	var remove bool
+	var rebase bool
+	var noRebase bool
 	cmd := &cobra.Command{
-		Use:   "merge name [--into branch] [--remove]",
-		Short: "Fast-forward the project root to a workspace branch",
-		Long: `Fast-forward the branch checked out in the project root to a workspace branch.
+		Use:   "merge name [--into branch] [--rebase | --no-rebase] [--remove]",
+		Short: "Integrate a workspace branch into the project root branch",
+		Long: `Integrate a workspace branch into the branch checked out in the project root.
 
-The merge is fast-forward only: boxt never creates merge commits, rebases,
-squashes or forces refs. The workspace and project root must be clean (ignored
-files may remain). Use --remove to delete the worktree after a successful merge;
-the Git branch is always kept.`,
+By default the merge is fast-forward only. With --rebase, or workspace.merge:
+rebase in .boxt/config.yaml, the workspace branch is rebased onto the target
+first and then fast-forwarded. boxt never creates merge commits, squashes or
+forces refs. The workspace and project root must be clean (ignored files may
+remain). Use --remove to delete the worktree after a successful merge; the Git
+branch is always kept.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.workspaceMerge(cmd.Context(), args[0], into, remove)
+			if rebase && noRebase {
+				return errors.New("--rebase and --no-rebase are mutually exclusive")
+			}
+			return app.workspaceMerge(cmd.Context(), args[0], into, remove, rebase, noRebase)
 		},
 	}
 	cmd.Flags().StringVar(&into, "into", "", "target branch (must be checked out in the project root)")
+	cmd.Flags().BoolVar(&rebase, "rebase", false, "rebase the workspace branch onto the target before fast-forwarding")
+	cmd.Flags().BoolVar(&noRebase, "no-rebase", false, "fast-forward only, overriding workspace.merge")
 	cmd.Flags().BoolVar(&remove, "remove", false, "remove the workspace worktree after a successful merge")
 	return cmd
 }
 
-func (a *App) workspaceMerge(ctx context.Context, name, into string, remove bool) error {
+func (a *App) workspaceMerge(ctx context.Context, name, into string, remove, rebase, noRebase bool) error {
 	p, err := a.loadProject()
 	if err != nil {
 		return err
@@ -296,11 +313,32 @@ func (a *App) workspaceMerge(ctx context.Context, name, into string, remove bool
 			return err
 		}
 	}
+	mode := p.Config.WorkspaceMergeMode()
+	switch {
+	case rebase:
+		mode = config.MergeModeRebase
+	case noRebase:
+		mode = config.MergeModeFF
+	}
 	ws, err := mgr.Get(ctx, name)
 	if err != nil {
 		return err
 	}
 	allowStart := p.Config.VM.AutoStartEnabled()
+	if mode == config.MergeModeRebase {
+		// Fail before rewriting the workspace branch if the merge could not
+		// complete, for example because the project root is dirty.
+		if err := mgr.RequireCleanRoot(ctx); err != nil {
+			return err
+		}
+		result, err := mgr.Rebase(ctx, name, into)
+		if err != nil {
+			return err
+		}
+		if !result.AlreadyCurrent {
+			printRebaseResult(a.Out, result)
+		}
+	}
 	if err := a.runHookPhase(ctx, p, config.HookWorkspaceMerge, "pre", ws, allowStart, false); err != nil {
 		return fmt.Errorf("workspace merge aborted by pre-hook: %w", err)
 	}
@@ -330,6 +368,84 @@ func (a *App) workspaceMerge(ctx context.Context, name, into string, remove bool
 		return err
 	}
 	return nil
+}
+
+func newWorkspaceRebaseCmd(app *App) *cobra.Command {
+	var into string
+	var cont bool
+	var abort bool
+	cmd := &cobra.Command{
+		Use:   "rebase name [--into branch] [--continue | --abort]",
+		Short: "Replay a workspace branch onto the project root branch",
+		Long: `Replay the named workspace's commits onto the branch checked out in the
+project root (git rebase). The target branch is never changed and the worktree
+is not removed.
+
+A conflict leaves the rebase open in the workspace. Resolve the files there,
+then run --continue; to discard the rebase and restore the previous tip, run
+--abort.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cont && abort {
+				return errors.New("--continue and --abort are mutually exclusive")
+			}
+			if (cont || abort) && into != "" {
+				return errors.New("--into cannot be combined with --continue or --abort")
+			}
+			return app.workspaceRebase(cmd.Context(), args[0], into, cont, abort)
+		},
+	}
+	cmd.Flags().StringVar(&into, "into", "", "target branch (must be checked out in the project root)")
+	cmd.Flags().BoolVar(&cont, "continue", false, "continue a rebase after resolving conflicts")
+	cmd.Flags().BoolVar(&abort, "abort", false, "abort an in-progress rebase and restore the previous tip")
+	return cmd
+}
+
+func (a *App) workspaceRebase(ctx context.Context, name, into string, cont, abort bool) error {
+	p, err := a.loadProject()
+	if err != nil {
+		return err
+	}
+	mgr, _, err := a.workspaceManager(p)
+	if err != nil {
+		return err
+	}
+	switch {
+	case cont:
+		result, err := mgr.RebaseContinue(ctx, name)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.Out, "Continued rebase of %s.\n", result.SourceBranch)
+		fmt.Fprintf(a.Out, "  HEAD: %s -> %s\n", shortHead(result.OldHead), shortHead(result.NewHead))
+		return nil
+	case abort:
+		result, err := mgr.RebaseAbort(ctx, name)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.Out, "Aborted rebase of %s; restored %s.\n", result.SourceBranch, shortHead(result.NewHead))
+		return nil
+	}
+	result, err := mgr.Rebase(ctx, name, into)
+	if err != nil {
+		return err
+	}
+	if result.AlreadyCurrent {
+		fmt.Fprintf(a.Out, "Already up to date: %s is based on %s at %s.\n", result.SourceBranch, result.TargetBranch, shortHead(result.NewHead))
+		return nil
+	}
+	printRebaseResult(a.Out, result)
+	return nil
+}
+
+func printRebaseResult(out io.Writer, result workspace.RebaseResult) {
+	if result.FastForwarded {
+		fmt.Fprintf(out, "Moved %s to %s.\n", result.SourceBranch, result.TargetBranch)
+	} else {
+		fmt.Fprintf(out, "Rebased %s onto %s.\n", result.SourceBranch, result.TargetBranch)
+	}
+	fmt.Fprintf(out, "  HEAD: %s -> %s\n", shortHead(result.OldHead), shortHead(result.NewHead))
 }
 
 func shortHead(head string) string {

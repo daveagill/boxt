@@ -95,6 +95,12 @@ func (c *Config) Validate() error {
 		v.add("vm.port_forwarding", "must be %q or %q", PortForwardingAuto, PortForwardingExplicit)
 	}
 
+	switch c.Workspace.Merge {
+	case MergeModeFF, MergeModeRebase:
+	default:
+		v.add("workspace.merge", "must be %q or %q", MergeModeFF, MergeModeRebase)
+	}
+
 	seenHostPorts := map[string]int{}
 	seenGuestPorts := map[int]int{}
 	for i, p := range c.VM.Ports {

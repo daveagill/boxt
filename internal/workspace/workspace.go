@@ -52,6 +52,9 @@ type Workspace struct {
 	Ahead      int
 	Behind     int
 	Compared   bool
+	// Operation names an in-progress Git operation in the worktree, such as
+	// "rebase", "merge" or "cherry-pick". Empty when the worktree is idle.
+	Operation string
 	// NewBranch is set only on the result of Create when the branch did not
 	// exist before. It lets callers roll back setup failures safely.
 	NewBranch bool
@@ -184,6 +187,16 @@ func (m *Manager) List(ctx context.Context) ([]Workspace, error) {
 		if !ws.Missing && !ws.Broken {
 			if dirty, err := m.dirty(ctx, ws.HostPath); err == nil {
 				ws.Dirty = dirty
+			}
+			if op, err := m.pendingOperation(ctx, ws.HostPath); err == nil {
+				ws.Operation = op
+			}
+			if ws.Operation == "rebase" && ws.Branch == "" {
+				// A rebase detaches HEAD. Recover the branch being rebased so
+				// list output and ahead/behind stay meaningful.
+				if branch, err := m.rebaseBranch(ctx, ws.HostPath); err == nil {
+					ws.Branch = branch
+				}
 			}
 		}
 		workspaces = append(workspaces, ws)
@@ -450,6 +463,19 @@ type MergeResult struct {
 	RemoveErr      error
 }
 
+// RebaseResult describes a successful workspace branch rebase.
+type RebaseResult struct {
+	Workspace      Workspace
+	SourceBranch   string
+	TargetBranch   string
+	OldHead        string
+	NewHead        string
+	AlreadyCurrent bool
+	// FastForwarded reports that the branch had no commits of its own and was
+	// simply moved to the target tip.
+	FastForwarded bool
+}
+
 // Merge fast-forwards the branch checked out in the project root to the named
 // workspace's branch. It never creates merge commits, rebases, squashes or
 // forces refs. When remove is set, the worktree is removed through the same safe
@@ -472,23 +498,16 @@ func (m *Manager) Merge(ctx context.Context, name, into string, remove bool) (Me
 	if ws.Locked {
 		return MergeResult{}, &ErrLocked{Name: name, Path: ws.HostPath, Reason: ws.LockReason}
 	}
+	if err := m.requireNoOperation(ctx, name, ws.HostPath); err != nil {
+		return MergeResult{}, err
+	}
 	if ws.Branch == "" {
 		return MergeResult{}, &ErrMergeDetached{Role: "workspace " + name}
 	}
 
-	target, err := m.Git.Output(ctx, root, "symbolic-ref", "--short", "HEAD")
+	target, err := m.resolveTarget(ctx, root, name, into, ws.Branch)
 	if err != nil {
-		return MergeResult{}, &ErrMergeDetached{Role: "project root"}
-	}
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return MergeResult{}, &ErrMergeDetached{Role: "project root"}
-	}
-	if into != "" && into != target {
-		return MergeResult{}, &ErrMergeTarget{Requested: into, Current: target}
-	}
-	if ws.Branch == target {
-		return MergeResult{}, fmt.Errorf("workspace %s already uses the target branch %s", name, target)
+		return MergeResult{}, err
 	}
 
 	if err := m.requireClean(ctx, ws.HostPath, "workspace "+name); err != nil {
@@ -532,6 +551,298 @@ func (m *Manager) Merge(ctx context.Context, name, into string, remove bool) (Me
 		}
 	}
 	return result, nil
+}
+
+// Rebase replays the named workspace's branch onto the branch checked out in
+// the project root. It never moves the target, removes the worktree or creates
+// merge commits. A conflict is left in the workspace for the caller to resolve
+// or abort; the target is never touched.
+func (m *Manager) Rebase(ctx context.Context, name, into string) (RebaseResult, error) {
+	if name == DefaultName {
+		return RebaseResult{}, &ErrDefaultWorkspace{}
+	}
+	if err := ValidateName(name); err != nil {
+		return RebaseResult{}, err
+	}
+	root, err := m.repoRoot(ctx)
+	if err != nil {
+		return RebaseResult{}, err
+	}
+	ws, err := m.Get(ctx, name)
+	if err != nil {
+		return RebaseResult{}, err
+	}
+	if ws.Locked {
+		return RebaseResult{}, &ErrLocked{Name: name, Path: ws.HostPath, Reason: ws.LockReason}
+	}
+	if err := m.requireNoOperation(ctx, name, ws.HostPath); err != nil {
+		return RebaseResult{}, err
+	}
+	if ws.Branch == "" {
+		return RebaseResult{}, &ErrMergeDetached{Role: "workspace " + name}
+	}
+	target, err := m.resolveTarget(ctx, root, name, into, ws.Branch)
+	if err != nil {
+		return RebaseResult{}, err
+	}
+	if err := m.requireClean(ctx, ws.HostPath, "workspace "+name); err != nil {
+		return RebaseResult{}, err
+	}
+
+	oldHead, err := m.Git.Output(ctx, root, "rev-parse", "refs/heads/"+ws.Branch)
+	if err != nil {
+		return RebaseResult{}, fmt.Errorf("inspect workspace branch: %w", err)
+	}
+	result := RebaseResult{
+		Workspace:    ws,
+		SourceBranch: ws.Branch,
+		TargetBranch: target,
+		OldHead:      strings.TrimSpace(oldHead),
+		NewHead:      strings.TrimSpace(oldHead),
+	}
+
+	if err := m.isAncestor(ctx, root, target, ws.Branch); err == nil {
+		result.AlreadyCurrent = true
+		return result, nil
+	} else if !isNotFastForward(err) {
+		return RebaseResult{}, err
+	}
+	if _, err := m.Git.Output(ctx, root, "merge-base", target, ws.Branch); err != nil {
+		if exitStatus(err) == 1 {
+			return RebaseResult{}, fmt.Errorf("cannot rebase %s onto %s: the branches share no history", ws.Branch, target)
+		}
+		return RebaseResult{}, fmt.Errorf("check common history: %w", err)
+	}
+	fastForward := false
+	if err := m.isAncestor(ctx, root, ws.Branch, target); err == nil {
+		fastForward = true
+	} else if !isNotFastForward(err) {
+		return RebaseResult{}, err
+	}
+
+	if _, err := m.Git.Output(ctx, ws.HostPath, "-c", "core.editor=true", "rebase", target); err != nil {
+		if op, probeErr := m.pendingOperation(ctx, ws.HostPath); probeErr == nil && op == "rebase" {
+			return RebaseResult{}, &ErrRebaseConflict{
+				Name:    name,
+				Path:    ws.HostPath,
+				Files:   m.unmergedPaths(ctx, ws.HostPath),
+				OldHead: result.OldHead,
+			}
+		}
+		return RebaseResult{}, fmt.Errorf("rebase %s onto %s: %w", ws.Branch, target, err)
+	}
+	newHead, err := m.Git.Output(ctx, ws.HostPath, "rev-parse", "HEAD")
+	if err != nil {
+		return RebaseResult{}, fmt.Errorf("inspect rebased branch: %w", err)
+	}
+	result.NewHead = strings.TrimSpace(newHead)
+	result.FastForwarded = fastForward
+	return result, nil
+}
+
+// RebaseContinue resumes a rebase left in the workspace after conflicts were
+// resolved. It reports the same conflict error while conflicts remain.
+func (m *Manager) RebaseContinue(ctx context.Context, name string) (RebaseResult, error) {
+	ws, root, target, err := m.requireRebaseInProgress(ctx, name)
+	if err != nil {
+		return RebaseResult{}, err
+	}
+	oldHead, _ := m.Git.Output(ctx, root, "rev-parse", "refs/heads/"+ws.Branch)
+	if _, err := m.Git.Output(ctx, ws.HostPath, "-c", "core.editor=true", "rebase", "--continue"); err != nil {
+		if op, probeErr := m.pendingOperation(ctx, ws.HostPath); probeErr == nil && op == "rebase" {
+			return RebaseResult{}, &ErrRebaseConflict{
+				Name:    name,
+				Path:    ws.HostPath,
+				Files:   m.unmergedPaths(ctx, ws.HostPath),
+				OldHead: strings.TrimSpace(oldHead),
+			}
+		}
+		return RebaseResult{}, fmt.Errorf("continue rebase in %s: %w", ws.HostPath, err)
+	}
+	newHead, err := m.Git.Output(ctx, ws.HostPath, "rev-parse", "HEAD")
+	if err != nil {
+		return RebaseResult{}, fmt.Errorf("inspect rebased branch: %w", err)
+	}
+	return RebaseResult{
+		Workspace:    ws,
+		SourceBranch: ws.Branch,
+		TargetBranch: target,
+		OldHead:      strings.TrimSpace(oldHead),
+		NewHead:      strings.TrimSpace(newHead),
+	}, nil
+}
+
+// RebaseAbort abandons an in-progress rebase and restores the workspace branch
+// to its pre-rebase tip.
+func (m *Manager) RebaseAbort(ctx context.Context, name string) (RebaseResult, error) {
+	ws, root, target, err := m.requireRebaseInProgress(ctx, name)
+	if err != nil {
+		return RebaseResult{}, err
+	}
+	abandoned, _ := m.Git.Output(ctx, ws.HostPath, "rev-parse", "HEAD")
+	if _, err := m.Git.Output(ctx, ws.HostPath, "rebase", "--abort"); err != nil {
+		return RebaseResult{}, fmt.Errorf("abort rebase in %s: %w", ws.HostPath, err)
+	}
+	restored, err := m.Git.Output(ctx, root, "rev-parse", "refs/heads/"+ws.Branch)
+	if err != nil {
+		return RebaseResult{}, fmt.Errorf("inspect restored branch: %w", err)
+	}
+	return RebaseResult{
+		Workspace:    ws,
+		SourceBranch: ws.Branch,
+		TargetBranch: target,
+		OldHead:      strings.TrimSpace(abandoned),
+		NewHead:      strings.TrimSpace(restored),
+	}, nil
+}
+
+// RequireCleanRoot reports an error when the project root has uncommitted
+// changes. Callers that are about to rewrite a workspace branch use it to fail
+// before changing any refs.
+func (m *Manager) RequireCleanRoot(ctx context.Context) error {
+	root, err := m.repoRoot(ctx)
+	if err != nil {
+		return err
+	}
+	return m.requireClean(ctx, root, "project root")
+}
+
+// requireRebaseInProgress resolves a workspace and refuses unless a rebase is
+// currently in progress in it.
+func (m *Manager) requireRebaseInProgress(ctx context.Context, name string) (Workspace, string, string, error) {
+	if name == DefaultName {
+		return Workspace{}, "", "", &ErrDefaultWorkspace{}
+	}
+	if err := ValidateName(name); err != nil {
+		return Workspace{}, "", "", err
+	}
+	root, err := m.repoRoot(ctx)
+	if err != nil {
+		return Workspace{}, "", "", err
+	}
+	ws, err := m.Get(ctx, name)
+	if err != nil {
+		return Workspace{}, "", "", err
+	}
+	op, err := m.pendingOperation(ctx, ws.HostPath)
+	if err != nil {
+		return Workspace{}, "", "", fmt.Errorf("inspect workspace %s: %w", name, err)
+	}
+	if op != "rebase" {
+		return Workspace{}, "", "", &ErrNoRebaseInProgress{Name: name}
+	}
+	target, err := m.Git.Output(ctx, root, "symbolic-ref", "--short", "HEAD")
+	if err != nil || strings.TrimSpace(target) == "" {
+		return Workspace{}, "", "", &ErrMergeDetached{Role: "project root"}
+	}
+	return ws, root, strings.TrimSpace(target), nil
+}
+
+func (m *Manager) requireNoOperation(ctx context.Context, name, dir string) error {
+	op, err := m.pendingOperation(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("inspect workspace %s: %w", name, err)
+	}
+	if op != "" {
+		return &ErrOperationInProgress{Name: name, Operation: op, Path: dir}
+	}
+	return nil
+}
+
+// resolveTarget returns the branch checked out in the project root, validating
+// an explicit --into request.
+func (m *Manager) resolveTarget(ctx context.Context, root, name, into, workspaceBranch string) (string, error) {
+	target, err := m.Git.Output(ctx, root, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", &ErrMergeDetached{Role: "project root"}
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", &ErrMergeDetached{Role: "project root"}
+	}
+	if into != "" && into != target {
+		return "", &ErrMergeTarget{Requested: into, Current: target}
+	}
+	if workspaceBranch == target {
+		return "", fmt.Errorf("workspace %s already uses the target branch %s", name, target)
+	}
+	return target, nil
+}
+
+// pendingOperation names an in-progress Git operation in dir, or "" when the
+// worktree is idle. It is best-effort for listing and authoritative for
+// mutating commands.
+func (m *Manager) pendingOperation(ctx context.Context, dir string) (string, error) {
+	probes := []struct{ op, file string }{
+		{"rebase", "rebase-merge"},
+		{"rebase", "rebase-apply"},
+		{"merge", "MERGE_HEAD"},
+		{"cherry-pick", "CHERRY_PICK_HEAD"},
+	}
+	for _, probe := range probes {
+		path, err := m.Git.Output(ctx, dir, "rev-parse", "--git-path", probe.file)
+		if err != nil {
+			return "", fmt.Errorf("locate Git metadata: %w", err)
+		}
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		if _, err := os.Stat(path); err == nil {
+			return probe.op, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return "", nil
+}
+
+// rebaseBranch recovers the branch being rebased while HEAD is detached.
+func (m *Manager) rebaseBranch(ctx context.Context, dir string) (string, error) {
+	gitDir, err := m.Git.Output(ctx, dir, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", err
+	}
+	gitDir = strings.TrimSpace(gitDir)
+	for _, state := range []string{"rebase-merge", "rebase-apply"} {
+		data, err := os.ReadFile(filepath.Join(gitDir, state, "head-name"))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return "", err
+		}
+		branch := strings.TrimSpace(string(data))
+		branch = strings.TrimPrefix(branch, "refs/heads/")
+		if branch != "" {
+			return branch, nil
+		}
+	}
+	return "", errors.New("rebase state has no branch name")
+}
+
+// unmergedPaths lists paths with unresolved conflicts. Failures are ignored
+// because the conflict error is still useful without them.
+func (m *Manager) unmergedPaths(ctx context.Context, dir string) []string {
+	out, err := m.Git.Output(ctx, dir, "diff", "--name-only", "--diff-filter=U", "-z")
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, rel := range strings.Split(out, "\x00") {
+		if rel != "" {
+			files = append(files, rel)
+		}
+	}
+	return files
+}
+
+func isNotFastForward(err error) bool {
+	var notFF *ErrNotFastForward
+	return errors.As(err, &notFF)
 }
 
 func (m *Manager) requireClean(ctx context.Context, dir, role string) error {
@@ -604,6 +915,12 @@ func (m *Manager) RemoveWithOptions(ctx context.Context, name string, opts Remov
 			return Workspace{}, fmt.Errorf("clean stale workspace metadata: %w", err)
 		}
 		return ws, nil
+	}
+
+	if !opts.Force {
+		if err := m.requireNoOperation(ctx, name, ws.HostPath); err != nil {
+			return Workspace{}, err
+		}
 	}
 
 	if !opts.Force {
@@ -927,7 +1244,7 @@ func (e *ErrBroken) Hint() string {
 type ErrDefaultWorkspace struct{}
 
 func (e *ErrDefaultWorkspace) Error() string {
-	return "the default workspace is implicit and cannot be created, merged, seeded or removed"
+	return "the default workspace is implicit and cannot be created, merged, rebased, seeded or removed"
 }
 
 // ErrMergeDetached refuses to merge without a branch to integrate.
@@ -971,7 +1288,60 @@ func (e *ErrNotFastForward) Error() string {
 	return fmt.Sprintf("cannot fast-forward %s to %s: their histories have diverged", e.Target, e.Source)
 }
 func (e *ErrNotFastForward) Hint() string {
-	return "No refs were changed. Rebase or merge the branch manually with Git, or recreate the workspace from the current target branch."
+	return "No refs were changed. Run `boxt workspace merge <workspace> --rebase`, run `boxt workspace rebase <workspace>` and merge again, or recreate the workspace from the current target branch."
+}
+
+// ErrRebaseConflict reports a rebase stopped by conflicts. The rebase remains
+// open in the workspace until it is continued or aborted.
+type ErrRebaseConflict struct {
+	Name    string
+	Path    string
+	Files   []string
+	OldHead string
+}
+
+func (e *ErrRebaseConflict) Error() string {
+	msg := fmt.Sprintf("Rebase of workspace %s stopped with conflicts", e.Name)
+	if len(e.Files) > 0 {
+		msg += ":\n  " + formatIgnoredPaths(e.Files)
+	}
+	return msg
+}
+func (e *ErrRebaseConflict) Hint() string {
+	hint := fmt.Sprintf("Resolve the conflicts in %s, then run `boxt workspace rebase %s --continue`.\nTo discard the rebase and restore the previous tip, run `boxt workspace rebase %s --abort`.", e.Path, e.Name, e.Name)
+	if e.OldHead != "" {
+		hint += fmt.Sprintf("\nThe previous tip was %s; the branch reflog keeps it recoverable.", e.OldHead)
+	}
+	return hint
+}
+
+// ErrOperationInProgress refuses workspace mutations while Git has an unfinished
+// operation in the worktree.
+type ErrOperationInProgress struct {
+	Name      string
+	Operation string
+	Path      string
+}
+
+func (e *ErrOperationInProgress) Error() string {
+	return fmt.Sprintf("Workspace %s has a %s in progress", e.Name, e.Operation)
+}
+func (e *ErrOperationInProgress) Hint() string {
+	if e.Operation == "rebase" {
+		return fmt.Sprintf("Finish it in %s with `git rebase --continue`, or run `boxt workspace rebase %s --continue` or `boxt workspace rebase %s --abort`.", e.Path, e.Name, e.Name)
+	}
+	return fmt.Sprintf("Finish or abort the %s in %s before retrying.", e.Operation, e.Path)
+}
+
+// ErrNoRebaseInProgress means --continue or --abort was requested without an
+// open rebase.
+type ErrNoRebaseInProgress struct{ Name string }
+
+func (e *ErrNoRebaseInProgress) Error() string {
+	return fmt.Sprintf("Workspace %s has no rebase in progress", e.Name)
+}
+func (e *ErrNoRebaseInProgress) Hint() string {
+	return fmt.Sprintf("Run `boxt workspace rebase %s` to start one.", e.Name)
 }
 
 // ErrDirty refuses to delete uncommitted work.

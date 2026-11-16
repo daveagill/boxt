@@ -1155,3 +1155,287 @@ func TestProjectLookupFromWorkspace(t *testing.T) {
 		t.Fatalf("nested lookup = %q, want %q", got.Root, nestedProject)
 	}
 }
+
+func commitWorkspaceFile(t *testing.T, dir, rel, content, message string) string {
+	t.Helper()
+	path := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", rel)
+	runGit(t, dir, "commit", "-q", "-m", message)
+	return runGit(t, dir, "rev-parse", "HEAD")
+}
+
+func TestRebaseThenMergeParallelWorkspaces(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ctx := context.Background()
+
+	a, err := m.Create(ctx, "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.Create(ctx, "feature-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitWorkspaceFile(t, a.HostPath, "a.txt", "a\n", "feature a")
+	commitWorkspaceFile(t, b.HostPath, "b.txt", "b\n", "feature b")
+
+	if _, err := m.Merge(ctx, "feature-a", "", false); err != nil {
+		t.Fatalf("merge feature-a: %v", err)
+	}
+	if _, err := m.Merge(ctx, "feature-b", "", false); err == nil {
+		t.Fatal("merge feature-b unexpectedly fast-forwarded after feature-a")
+	} else {
+		var notFF *ErrNotFastForward
+		if !errors.As(err, &notFF) {
+			t.Fatalf("expected ErrNotFastForward, got %v", err)
+		}
+	}
+
+	res, err := m.Rebase(ctx, "feature-b", "")
+	if err != nil {
+		t.Fatalf("Rebase: %v", err)
+	}
+	if res.AlreadyCurrent || res.OldHead == res.NewHead || res.FastForwarded {
+		t.Fatalf("unexpected rebase result: %#v", res)
+	}
+	if branchTip := runGit(t, b.HostPath, "rev-parse", "HEAD"); branchTip != res.NewHead {
+		t.Fatalf("workspace head = %s, want %s", branchTip, res.NewHead)
+	}
+
+	if _, err := m.Merge(ctx, "feature-b", "", false); err != nil {
+		t.Fatalf("merge after rebase: %v", err)
+	}
+	// The target history must be linear: the rebased tip has a single parent.
+	parents := strings.Fields(runGit(t, repo, "rev-list", "--parents", "-n", "1", "HEAD"))
+	if len(parents) != 2 {
+		t.Fatalf("target is not a linear fast-forward: %v", parents)
+	}
+	for _, rel := range []string{"a.txt", "b.txt"} {
+		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
+			t.Fatalf("%s missing from project root: %v", rel, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repo, "b.txt")); err != nil {
+		t.Fatalf("b.txt missing: %v", err)
+	}
+}
+
+func TestRebaseAlreadyUpToDate(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ctx := context.Background()
+	if _, err := m.Create(ctx, "feature-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	before := runGit(t, repo, "rev-parse", "HEAD")
+	res, err := m.Rebase(ctx, "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.AlreadyCurrent || res.OldHead != before || res.NewHead != before {
+		t.Fatalf("result = %#v", res)
+	}
+}
+
+func TestRebaseFastForwardsBranchWithoutCommits(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ctx := context.Background()
+	if _, err := m.Create(ctx, "feature-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	head := commitWorkspaceFile(t, repo, "root.txt", "root\n", "root change")
+
+	res, err := m.Rebase(ctx, "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.FastForwarded || res.AlreadyCurrent {
+		t.Fatalf("result = %#v", res)
+	}
+	if got := runGit(t, repo, "rev-parse", "boxt/feature-a"); got != head {
+		t.Fatalf("branch = %s, want %s", got, head)
+	}
+}
+
+func TestRebaseConflictLeavesRebaseOpen(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ctx := context.Background()
+
+	a, err := m.Create(ctx, "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.Create(ctx, "feature-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitWorkspaceFile(t, a.HostPath, "README.md", "from a\n", "a change")
+	commitWorkspaceFile(t, b.HostPath, "README.md", "from b\n", "b change")
+	if _, err := m.Merge(ctx, "feature-a", "", false); err != nil {
+		t.Fatalf("merge feature-a: %v", err)
+	}
+	rootBefore := runGit(t, repo, "rev-parse", "HEAD")
+	bBefore := runGit(t, b.HostPath, "rev-parse", "HEAD")
+
+	_, err = m.Rebase(ctx, "feature-b", "")
+	var conflict *ErrRebaseConflict
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected ErrRebaseConflict, got %v", err)
+	}
+	if len(conflict.Files) != 1 || conflict.Files[0] != "README.md" {
+		t.Fatalf("conflict files = %#v", conflict.Files)
+	}
+	if got := runGit(t, repo, "rev-parse", "HEAD"); got != rootBefore {
+		t.Fatal("conflicted rebase changed the target")
+	}
+
+	list, err := m.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("list = %#v", list)
+	}
+	var got Workspace
+	for _, ws := range list {
+		if ws.Name == "feature-b" {
+			got = ws
+		}
+	}
+	if got.Operation != "rebase" || got.Branch != "boxt/feature-b" || !got.Dirty {
+		t.Fatalf("workspace state = %#v", got)
+	}
+
+	if _, err := m.Merge(ctx, "feature-b", "", false); err == nil {
+		t.Fatal("merge ran during an open rebase")
+	} else {
+		var inProgress *ErrOperationInProgress
+		if !errors.As(err, &inProgress) {
+			t.Fatalf("expected ErrOperationInProgress, got %v", err)
+		}
+	}
+	if _, err := m.Remove(ctx, "feature-b", false); err == nil {
+		t.Fatal("remove ran during an open rebase")
+	} else {
+		var inProgress *ErrOperationInProgress
+		if !errors.As(err, &inProgress) {
+			t.Fatalf("expected ErrOperationInProgress, got %v", err)
+		}
+	}
+
+	aborted, err := m.RebaseAbort(ctx, "feature-b")
+	if err != nil {
+		t.Fatalf("RebaseAbort: %v", err)
+	}
+	if aborted.NewHead != bBefore {
+		t.Fatalf("abort restored %s, want %s", aborted.NewHead, bBefore)
+	}
+	if got := runGit(t, b.HostPath, "rev-parse", "HEAD"); got != bBefore {
+		t.Fatalf("branch after abort = %s, want %s", got, bBefore)
+	}
+	if _, err := os.Stat(filepath.Join(b.HostPath, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.Rebase(ctx, "feature-b", ""); err == nil {
+		t.Fatal("expected conflict on retry")
+	}
+	if err := os.WriteFile(filepath.Join(b.HostPath, "README.md"), []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, b.HostPath, "add", "README.md")
+	continued, err := m.RebaseContinue(ctx, "feature-b")
+	if err != nil {
+		t.Fatalf("RebaseContinue: %v", err)
+	}
+	if continued.NewHead == bBefore {
+		t.Fatal("continue did not move the branch")
+	}
+	if _, err := m.Merge(ctx, "feature-b", "", false); err != nil {
+		t.Fatalf("merge after continue: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "resolved" {
+		t.Fatalf("README = %q", data)
+	}
+}
+
+func TestRebaseRefusesDirtyWorkspaceAndDetached(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ctx := context.Background()
+	ws, err := m.Create(ctx, "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "untracked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Rebase(ctx, "feature-a", ""); err == nil {
+		t.Fatal("rebase ran on a dirty workspace")
+	} else {
+		var dirty *ErrMergeDirty
+		if !errors.As(err, &dirty) {
+			t.Fatalf("expected ErrMergeDirty, got %v", err)
+		}
+	}
+	if err := os.Remove(filepath.Join(ws.HostPath, "untracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "checkout", "--detach", "-q")
+	if _, err := m.Rebase(ctx, "feature-a", ""); err == nil {
+		t.Fatal("rebase ran with a detached HEAD")
+	} else {
+		var detached *ErrMergeDetached
+		if !errors.As(err, &detached) {
+			t.Fatalf("expected ErrMergeDetached, got %v", err)
+		}
+	}
+}
+
+func TestRequireCleanRoot(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	if err := m.RequireCleanRoot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := m.RequireCleanRoot(context.Background())
+	var dirty *ErrMergeDirty
+	if !errors.As(err, &dirty) || dirty.Role != "project root" {
+		t.Fatalf("expected project root ErrMergeDirty, got %v", err)
+	}
+}
+
+func TestRebaseNoRebaseInProgress(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ctx := context.Background()
+	if _, err := m.Create(ctx, "feature-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range []func(context.Context, string) (RebaseResult, error){m.RebaseContinue, m.RebaseAbort} {
+		if _, err := fn(ctx, "feature-a"); err == nil {
+			t.Fatal("operation ran without an open rebase")
+		} else {
+			var none *ErrNoRebaseInProgress
+			if !errors.As(err, &none) {
+				t.Fatalf("expected ErrNoRebaseInProgress, got %v", err)
+			}
+		}
+	}
+}

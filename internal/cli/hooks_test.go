@@ -422,3 +422,82 @@ func TestMergePostHookFailureKeepsMerge(t *testing.T) {
 		t.Fatal("post-hook failure undid the merge")
 	}
 }
+
+func TestMergeRebasePreHookSeesRebasedTree(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, `version: 1
+hooks:
+  workspace_merge:
+    pre:
+      - command: ["test", "-f", "a.txt"]
+        where: host
+`)
+	trustProjectHooks(t, f)
+	gitRunInTest(t, f.project.Root, "add", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "hooks config")
+	parallelWorkspaces(t, f)
+	if code := f.run(t, "workspace", "merge", "feature-b", "--rebase"); code != 0 {
+		t.Fatalf("merge exit %d: %s", code, f.errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(f.project.Root, "b.txt")); err != nil {
+		t.Fatalf("b.txt not merged: %v", err)
+	}
+}
+
+func TestMergeRebasePreHookFailureKeepsTargetButRebasesWorkspace(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	for _, name := range []string{"feature-a", "feature-b"} {
+		if code := f.run(t, "workspace", "create", name); code != 0 {
+			t.Fatalf("create %s failed: %s", name, f.errOut.String())
+		}
+	}
+	a := filepath.Join(f.workspaceHostRoot(), "feature-a")
+	b := filepath.Join(f.workspaceHostRoot(), "feature-b")
+	writeAndCommit(t, a, "a.txt", "a\n", "feature a")
+	writeAndCommit(t, b, "b.txt", "b\n", "feature b")
+	if code := f.run(t, "workspace", "merge", "feature-a"); code != 0 {
+		t.Fatalf("merge feature-a exit %d: %s", code, f.errOut.String())
+	}
+	f.out.Reset()
+	f.errOut.Reset()
+
+	f.writeConfig(t, `version: 1
+hooks:
+  workspace_merge:
+    pre:
+      - command: ["sh", "-c", "exit 1"]
+        where: host
+`)
+	trustProjectHooks(t, f)
+	gitRunInTest(t, f.project.Root, "add", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "failing hook")
+	rootBefore, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", f.project.Root, "rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bBefore, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", b, "rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code := f.run(t, "workspace", "merge", "feature-b", "--rebase"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	rootAfter, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", f.project.Root, "rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootAfter != rootBefore {
+		t.Fatal("pre-hook failure changed the target")
+	}
+	bAfter, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", b, "rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bAfter == bBefore {
+		t.Fatal("pre-hook ran before the rebase")
+	}
+	if _, err := os.Stat(filepath.Join(f.project.Root, "b.txt")); !os.IsNotExist(err) {
+		t.Fatal("pre-hook failure merged files into the project root")
+	}
+}

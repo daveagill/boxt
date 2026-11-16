@@ -164,13 +164,27 @@ examples/node-app/        complete runnable example
   `--run <target>` remains accepted when it follows the workspace name. Preserve
   the guest exit status, leave the workspace on failure, and honor
   `--no-start`/`vm.auto_start`.
-- `boxt workspace merge` is fast-forward only. Require clean source and project
-  root, reject detached HEAD and diverged histories before changing refs, and
-  never force/squash/create merge commits. `--remove` uses the safe worktree
-  removal path and never deletes the branch.
+- `boxt workspace merge` defaults to fast-forward only: require clean source and
+  project root, reject detached HEAD and diverged histories before changing refs,
+  and never force/squash/create merge commits. `--rebase` (or
+  `workspace.merge: rebase`) replays the workspace branch onto the target first,
+  then fast-forwards; `--no-rebase` overrides the config for one command.
+  `boxt workspace rebase <name>` is the primitive: it never moves the target or
+  removes the worktree. A conflicting rebase stays open in the workspace with
+  conflict markers and is reported as `rebasing` by `workspace list`; merge,
+  rebase and non-forced remove refuse until `rebase --continue` or `--abort`.
+  The project root is never rebased or left conflicted. A pre-merge hook runs
+  after the rebase, so a pre-hook failure leaves the workspace rebased but the
+  target unchanged. Branch tip recovery relies on the printed old head and the
+  branch reflog; boxt creates no backup refs. `--remove` uses the safe worktree
+  removal path and never deletes the branch. Rebase mode uses host Git like the
+  merge itself and requires no VM.
+- `workspace.merge` is execution policy: like `vm.auto_start`, tools and run
+  targets it is not part of the VM creation fingerprint and must never require
+  `boxt destroy`.
 - `workspace list`/`status` summaries are best-effort: report dirty state,
-  short HEAD and ahead/behind vs the default branch, but never fail the whole
-  list for one missing, detached or broken worktree.
+  short HEAD, ahead/behind vs the default branch and any in-progress Git operation,
+  but never fail the whole list for one missing, detached or broken worktree.
 - Ignored-file seeding copies only `git ls-files --others --ignored
   --exclude-standard` paths from the default workspace, never tracked files and
   never an existing destination path (file, directory or symlink). Candidates
@@ -231,6 +245,10 @@ examples/node-app/        complete runnable example
 - Pre-hook failure aborts the operation (create rolls back the new worktree and
   only a newly-created branch). Post-hook failure reports failure but does not
   undo a completed create/merge/remove. Apply a fixed generous timeout per hook.
+  In rebase merge mode the `workspace_merge` pre-hook runs after the rebase, so
+  its failure leaves the workspace rebased and the target unchanged.
+- `workspace rebase` runs no lifecycle hooks; it is a Git operation on the
+  workspace branch only.
 - `create --seed` runs after worktree creation and before hooks and `--run`.
 
 ### Project discovery

@@ -30,6 +30,12 @@ const (
 	// ports and ignores everything else.
 	PortForwardingAuto     = "auto"
 	PortForwardingExplicit = "explicit"
+
+	// MergeModeFF only permits `boxt workspace merge` when the target branch can
+	// fast-forward to the workspace branch. MergeModeRebase replays the workspace
+	// branch onto the target first, then fast-forwards.
+	MergeModeFF     = "ff"
+	MergeModeRebase = "rebase"
 )
 
 // ErrConfigExists is returned when initialization would overwrite a project.
@@ -37,12 +43,29 @@ var ErrConfigExists = errors.New("project configuration already exists")
 
 // Config is the root of .boxt/config.yaml.
 type Config struct {
-	Version int               `yaml:"version"`
-	VM      VMConfig          `yaml:"vm"`
-	Seed    *SeedConfig       `yaml:"seed,omitempty"`
-	Tools   map[string]string `yaml:"tools,omitempty"`
-	Run     RunConfig         `yaml:"run"`
-	Hooks   *HooksConfig      `yaml:"hooks,omitempty"`
+	Version   int               `yaml:"version"`
+	VM        VMConfig          `yaml:"vm"`
+	Workspace WorkspaceConfig   `yaml:"workspace"`
+	Seed      *SeedConfig       `yaml:"seed,omitempty"`
+	Tools     map[string]string `yaml:"tools,omitempty"`
+	Run       RunConfig         `yaml:"run"`
+	Hooks     *HooksConfig      `yaml:"hooks,omitempty"`
+}
+
+// WorkspaceConfig controls workspace behavior. These settings are execution
+// policy: changing them never requires recreating the VM.
+type WorkspaceConfig struct {
+	// Merge selects the default merge strategy for `boxt workspace merge`.
+	Merge string `yaml:"merge,omitempty"`
+}
+
+// WorkspaceMergeMode returns the configured merge mode, defaulting to
+// fast-forward only.
+func (c *Config) WorkspaceMergeMode() string {
+	if c == nil || c.Workspace.Merge == "" {
+		return MergeModeFF
+	}
+	return c.Workspace.Merge
 }
 
 // SeedConfig controls which Git-ignored files may be copied into a workspace
@@ -165,6 +188,9 @@ func Default() *Config {
 			PortForwarding: PortForwardingAuto,
 			AutoStart:      boolPtr(true),
 		},
+		Workspace: WorkspaceConfig{
+			Merge: MergeModeFF,
+		},
 		Tools: map[string]string{},
 		Run: RunConfig{
 			Targets: map[string]RunTarget{},
@@ -196,6 +222,11 @@ vm:
   # create/start the VM automatically before run and shell commands
   auto_start: true
 
+workspace:
+  # ff: merge only when the target branch can fast-forward
+  # rebase: replay the workspace branch onto the target, then fast-forward
+  merge: ff
+
 # Tools are installed into the project VM. Example:
 # tools:
 #   node: "lts"
@@ -223,6 +254,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.VM.AutoStart == nil {
 		c.VM.AutoStart = boolPtr(true)
+	}
+	if c.Workspace.Merge == "" {
+		c.Workspace.Merge = MergeModeFF
 	}
 	if c.Tools == nil {
 		c.Tools = map[string]string{}

@@ -975,3 +975,273 @@ func TestCommandsWorkFromInsideWorkspace(t *testing.T) {
 		t.Fatalf("status from workspace did not resolve project:\n%s", f.out.String())
 	}
 }
+
+func writeAndCommit(t *testing.T, dir, rel, content, message string) {
+	t.Helper()
+	path := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, dir, "add", rel)
+	gitRunInTest(t, dir, "commit", "-q", "-m", message)
+}
+
+// parallelWorkspaces creates two workspaces with disjoint commits and merges
+// the first one, leaving the second diverged.
+func parallelWorkspaces(t *testing.T, f *lifecycleFixture) (string, string) {
+	t.Helper()
+	for _, name := range []string{"feature-a", "feature-b"} {
+		if code := f.run(t, "workspace", "create", name); code != 0 {
+			t.Fatalf("create %s exit %d: %s", name, code, f.errOut.String())
+		}
+	}
+	a := filepath.Join(f.workspaceHostRoot(), "feature-a")
+	b := filepath.Join(f.workspaceHostRoot(), "feature-b")
+	writeAndCommit(t, a, "a.txt", "a\n", "feature a")
+	writeAndCommit(t, b, "b.txt", "b\n", "feature b")
+	if code := f.run(t, "workspace", "merge", "feature-a"); code != 0 {
+		t.Fatalf("merge feature-a exit %d: %s", code, f.errOut.String())
+	}
+	f.out.Reset()
+	f.errOut.Reset()
+	return a, b
+}
+
+func TestWorkspaceMergeRebaseFlag(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	_, b := parallelWorkspaces(t, f)
+	if code := f.run(t, "workspace", "merge", "feature-b", "--rebase"); code != 0 {
+		t.Fatalf("merge --rebase exit %d: %s", code, f.errOut.String())
+	}
+	for _, want := range []string{"Rebased boxt/feature-b onto", "HEAD:", "Fast-forwarded"} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, f.out.String())
+		}
+	}
+	for _, rel := range []string{"a.txt", "b.txt"} {
+		if _, err := os.Stat(filepath.Join(f.project.Root, rel)); err != nil {
+			t.Fatalf("%s missing from project root: %v", rel, err)
+		}
+	}
+	if _, err := os.Stat(b); err != nil {
+		t.Fatalf("workspace removed without --remove: %v", err)
+	}
+}
+
+func TestWorkspaceMergeRebaseFromConfig(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, `version: 1
+workspace:
+  merge: rebase
+run:
+  targets: {}
+`)
+	gitRunInTest(t, f.project.Root, "add", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "config")
+	parallelWorkspaces(t, f)
+	if code := f.run(t, "workspace", "merge", "feature-b"); code != 0 {
+		t.Fatalf("merge exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "Rebased boxt/feature-b") {
+		t.Fatalf("config rebase mode not used:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceMergeNoRebaseOverridesConfig(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, `version: 1
+workspace:
+  merge: rebase
+run:
+  targets: {}
+`)
+	gitRunInTest(t, f.project.Root, "add", ".boxt/config.yaml")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "config")
+	parallelWorkspaces(t, f)
+	if code := f.run(t, "workspace", "merge", "feature-b", "--no-rebase"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "diverged") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestWorkspaceMergeRebaseFlagsConflict(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "merge", "feature-a", "--rebase", "--no-rebase"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "mutually exclusive") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestWorkspaceMergeRebaseConflictAbortAndContinue(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed")
+	}
+	if code := f.run(t, "workspace", "create", "feature-b"); code != 0 {
+		t.Fatalf("create failed")
+	}
+	a := filepath.Join(f.workspaceHostRoot(), "feature-a")
+	b := filepath.Join(f.workspaceHostRoot(), "feature-b")
+	writeAndCommit(t, a, "README.md", "from a\n", "a change")
+	writeAndCommit(t, b, "README.md", "from b\n", "b change")
+	if code := f.run(t, "workspace", "merge", "feature-a"); code != 0 {
+		t.Fatalf("merge feature-a exit %d: %s", code, f.errOut.String())
+	}
+	f.out.Reset()
+	f.errOut.Reset()
+	bBefore, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", b, "rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code := f.run(t, "workspace", "merge", "feature-b", "--rebase"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	for _, want := range []string{"stopped with conflicts", "README.md", "--continue", "--abort"} {
+		if !strings.Contains(f.errOut.String(), want) {
+			t.Fatalf("error missing %q:\n%s", want, f.errOut.String())
+		}
+	}
+
+	f.out.Reset()
+	if code := f.run(t, "workspace", "list"); code != 0 {
+		t.Fatalf("list exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "rebasing") || !strings.Contains(f.out.String(), "boxt/feature-b") {
+		t.Fatalf("list does not report the rebase:\n%s", f.out.String())
+	}
+
+	f.out.Reset()
+	if code := f.run(t, "workspace", "rebase", "feature-b", "--abort"); code != 0 {
+		t.Fatalf("abort exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "Aborted rebase") {
+		t.Fatalf("unexpected abort output:\n%s", f.out.String())
+	}
+	got, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", b, "rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != bBefore {
+		t.Fatalf("abort restored %s, want %s", got, bBefore)
+	}
+
+	if code := f.run(t, "workspace", "rebase", "feature-b"); code != 1 {
+		t.Fatalf("rebase exit = %d, want 1", code)
+	}
+	if err := os.WriteFile(filepath.Join(b, "README.md"), []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, b, "add", "README.md")
+	f.out.Reset()
+	f.errOut.Reset()
+	if code := f.run(t, "workspace", "rebase", "feature-b", "--continue"); code != 0 {
+		t.Fatalf("continue exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "Continued rebase") {
+		t.Fatalf("unexpected continue output:\n%s", f.out.String())
+	}
+	f.out.Reset()
+	if code := f.run(t, "workspace", "merge", "feature-b"); code != 0 {
+		t.Fatalf("merge after continue exit %d: %s", code, f.errOut.String())
+	}
+	data, err := os.ReadFile(filepath.Join(f.project.Root, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "resolved" {
+		t.Fatalf("README = %q", data)
+	}
+}
+
+func TestWorkspaceRebaseAlreadyUpToDate(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed")
+	}
+	f.out.Reset()
+	if code := f.run(t, "workspace", "rebase", "feature-a"); code != 0 {
+		t.Fatalf("rebase exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "Already up to date") {
+		t.Fatalf("unexpected output:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceRebaseNoProgress(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed")
+	}
+	for _, args := range [][]string{
+		{"workspace", "rebase", "feature-a", "--continue"},
+		{"workspace", "rebase", "feature-a", "--abort"},
+	} {
+		f.errOut.Reset()
+		if code := f.run(t, args...); code != 1 {
+			t.Fatalf("%v exit = %d, want 1", args, code)
+		}
+		if !strings.Contains(f.errOut.String(), "no rebase in progress") {
+			t.Fatalf("%v: unexpected error: %s", args, f.errOut.String())
+		}
+	}
+	f.errOut.Reset()
+	if code := f.run(t, "workspace", "rebase", "feature-a", "--continue", "--abort"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "mutually exclusive") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestWorkspaceMergeRebaseRemove(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	_, b := parallelWorkspaces(t, f)
+	if code := f.run(t, "workspace", "merge", "feature-b", "--rebase", "--remove"); code != 0 {
+		t.Fatalf("merge exit %d: %s", code, f.errOut.String())
+	}
+	if _, err := os.Stat(b); !os.IsNotExist(err) {
+		t.Fatal("workspace not removed")
+	}
+	if !strings.Contains(f.out.String(), "Git branch boxt/feature-b was kept") {
+		t.Fatalf("branch retention missing:\n%s", f.out.String())
+	}
+	// The branch must still exist after the worktree is removed.
+	if out, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{
+		Name: "git", Args: []string{"-C", f.project.Root, "show-ref", "--verify", "refs/heads/boxt/feature-b"},
+	}); err != nil {
+		t.Fatalf("branch deleted: %v (%s)", err, out)
+	}
+}
+
+func TestWorkspaceMergeRebaseDirtyRootFailsBeforeRebase(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	_, b := parallelWorkspaces(t, f)
+	bBefore, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", b, "rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.project.Root, "dirty.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "workspace", "merge", "feature-b", "--rebase"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "project root has uncommitted changes") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+	bAfter, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: []string{"-C", b, "rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bAfter != bBefore {
+		t.Fatal("workspace branch changed before the dirty root was reported")
+	}
+}

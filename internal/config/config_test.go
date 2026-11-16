@@ -40,6 +40,37 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMergeMode(t *testing.T) {
+	if got := Default().WorkspaceMergeMode(); got != MergeModeFF {
+		t.Fatalf("default merge mode = %q", got)
+	}
+	var nilConfig *Config
+	if got := nilConfig.WorkspaceMergeMode(); got != MergeModeFF {
+		t.Fatalf("nil merge mode = %q", got)
+	}
+	cfg, err := Parse([]byte("version: 1\nworkspace:\n  merge: rebase\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.WorkspaceMergeMode(); got != MergeModeRebase {
+		t.Fatalf("merge mode = %q", got)
+	}
+	data, err := Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "merge: rebase") {
+		t.Fatalf("merge mode not preserved:\n%s", data)
+	}
+	ff, err := Parse([]byte("version: 1\nworkspace:\n  merge: ff\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ff.WorkspaceMergeMode(); got != MergeModeFF {
+		t.Fatalf("merge mode = %q", got)
+	}
+}
+
 func TestParseAutoStartFalse(t *testing.T) {
 	cfg, err := Parse([]byte("version: 1\nvm:\n  auto_start: false\n"))
 	if err != nil {
@@ -75,6 +106,7 @@ func TestParseValidationErrors(t *testing.T) {
 		{"bad guest port", "version: 1\nvm:\n  ports:\n    - guest: 0\n      host: 3000\n", "vm.ports[0].guest", "1 and 65535"},
 		{"bad host ip", "version: 1\nvm:\n  ports:\n    - guest: 80\n      host: 8080\n      host_ip: nope\n", "vm.ports[0].host_ip", "invalid IP"},
 		{"bad port forwarding mode", "version: 1\nvm:\n  port_forwarding: sometimes\n", "vm.port_forwarding", "must be"},
+		{"bad workspace merge mode", "version: 1\nworkspace:\n  merge: squash\n", "workspace.merge", "must be"},
 		{"duplicate host binding", "version: 1\nvm:\n  ports:\n    - guest: 80\n      host: 8080\n    - guest: 81\n      host: 8080\n", "vm.ports[1].host", "duplicates"},
 		{"guest port 22", "version: 1\nvm:\n  ports:\n    - guest: 22\n      host: 2222\n", "vm.ports[0].guest", "reserved"},
 		{"duplicate guest port", "version: 1\nvm:\n  ports:\n    - guest: 3000\n      host: 3000\n    - guest: 3000\n      host: 3001\n", "vm.ports[1].guest", "duplicates"},
