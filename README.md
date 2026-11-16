@@ -29,6 +29,12 @@ boxt workspace create agent-2
 boxt workspace run agent-2 opencode
 ```
 
+Or create the workspace and start its agent in one command:
+
+```bash
+boxt workspace create agent-2 --run opencode
+```
+
 See [Getting started](#getting-started), [Presets](#presets),
 [Workspaces](#workspaces), [Running commands](#running-commands) and the
 complete [example](#complete-example).
@@ -452,6 +458,7 @@ and caches, but have their own checkout, branch, HEAD and index.
 ```bash
 boxt workspace create feature-a
 boxt workspace create feature-b --branch experiment/b
+boxt workspace create agent-1 --run opencode
 boxt workspace list
 boxt workspace path feature-a
 boxt workspace run feature-a test
@@ -463,9 +470,12 @@ boxt workspace remove feature-a
 ```
 
 The default branch name is `boxt/<workspace>`. Pass `--branch` to create or check
-out a different branch. The default workspace is the project root, always exists,
-and cannot be created or removed. It can be addressed as `default` in
-`workspace path|run|shell`.
+out a different branch. `--run <target>` resolves the target before the worktree
+is created, then creates the workspace and runs the target in it through the
+shared executor. A non-zero target exit status is propagated and the workspace is
+left in place for inspection; `--no-start` prevents VM auto-start. The default
+workspace is the project root, always exists, and cannot be created or removed. It
+can be addressed as `default` in `workspace path|run|shell`.
 
 `boxt workspace merge <name>` fast-forwards the branch currently checked out in
 the project root to the workspace branch. It refuses diverged histories rather

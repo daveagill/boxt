@@ -398,6 +398,99 @@ func TestWorkspaceRunUnexpectedBeforeDash(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCreateRun(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "agent-1", "--run", "test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	guest := "/workspaces/" + f.project.ID + "/agent-1"
+	c := f.shellCommand(t)
+	if !containsArg(c.Args, guest) {
+		t.Fatalf("missing guest workdir %q: %#v", guest, c.Args)
+	}
+	if !endsWith(c.Args, []string{"--", "npm", "test"}) {
+		t.Fatalf("unexpected args: %#v", c.Args)
+	}
+	if _, err := os.Stat(filepath.Join(f.workspaceHostRoot(), "agent-1")); err != nil {
+		t.Fatalf("workspace missing: %v", err)
+	}
+}
+
+func TestWorkspaceCreateRunUnknownTargetWritesNothing(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "agent-1", "--run", "nope"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "unknown run target: nope") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(f.workspaceHostRoot(), "agent-1")); !os.IsNotExist(err) {
+		t.Fatal("unknown target created a workspace")
+	}
+	if f.countCommands("shell") != 0 {
+		t.Fatal("unknown target reached the guest")
+	}
+}
+
+func TestWorkspaceCreateRunNoStart(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Stopped"
+	if code := f.run(t, "workspace", "create", "agent-1", "--run", "test", "--no-start"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if _, err := os.Stat(filepath.Join(f.workspaceHostRoot(), "agent-1")); err != nil {
+		t.Fatalf("workspace was not left in place: %v", err)
+	}
+	if f.countCommands("start") != 0 || f.countCommands("shell") != 0 {
+		t.Fatalf("--no-start invoked Lima: %#v", f.runner.commands)
+	}
+}
+
+func TestWorkspaceCreateRunAutoStarts(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Stopped"
+	if code := f.run(t, "workspace", "create", "agent-1", "--run", "test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if f.countCommands("start") != 1 || f.countCommands("shell") != 1 {
+		t.Fatalf("unexpected commands: %#v", f.runner.commands)
+	}
+}
+
+func TestWorkspaceCreateRunPropagatesExitStatus(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	f.runner.shellErr = &command.Error{Name: "limactl", ExitCode: 7, Stderr: "failed"}
+	if code := f.run(t, "workspace", "create", "agent-1", "--run", "test"); code != 7 {
+		t.Fatalf("exit = %d, want 7", code)
+	}
+	if _, err := os.Stat(filepath.Join(f.workspaceHostRoot(), "agent-1")); err != nil {
+		t.Fatal("failed run removed the workspace")
+	}
+}
+
+func TestWorkspaceCreateBranchAndRun(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "agent-1", "--branch", "feature/agent", "--run", "test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "feature/agent") {
+		t.Fatalf("branch missing: %s", f.out.String())
+	}
+	if !endsWith(f.shellCommand(t).Args, []string{"--", "npm", "test"}) {
+		t.Fatalf("unexpected args: %#v", f.shellCommand(t).Args)
+	}
+}
+
 func TestWorkspaceMerge(t *testing.T) {
 	f := newWorkspaceFixture(t)
 	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {

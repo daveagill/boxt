@@ -39,22 +39,40 @@ func (a *App) workspaceManager(p *project.Project) (*workspace.Manager, projectP
 
 func newWorkspaceCreateCmd(app *App) *cobra.Command {
 	var branch string
+	var runTarget string
+	var noStart bool
 	cmd := &cobra.Command{
 		Use:   "create name",
 		Short: "Create a named workspace backed by a Git worktree",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.workspaceCreate(cmd.Context(), args[0], branch)
+			return app.workspaceCreate(cmd.Context(), args[0], branch, runTarget, noStart)
 		},
 	}
 	cmd.Flags().StringVar(&branch, "branch", "", "branch to create or check out (default: boxt/<name>)")
+	cmd.Flags().StringVar(&runTarget, "run", "", "run a configured target in the new workspace")
+	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not create or start the VM automatically for --run")
 	return cmd
 }
 
-func (a *App) workspaceCreate(ctx context.Context, name, branch string) error {
+func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget string, noStart bool) error {
+	if err := workspace.ValidateName(name); err != nil {
+		return err
+	}
 	p, err := a.loadProject()
 	if err != nil {
 		return err
+	}
+	var inv invocation
+	if runTarget != "" {
+		target, ok := p.Config.ResolveTarget(runTarget)
+		if !ok {
+			return &unknownTargetError{Name: runTarget, CommandPrefix: "boxt workspace create " + name + " --run"}
+		}
+		inv = invocation{
+			Command:     append([]string(nil), target.Command...),
+			Interactive: target.Interactive,
+		}
 	}
 	mgr, _, err := a.workspaceManager(p)
 	if err != nil {
@@ -68,7 +86,11 @@ func (a *App) workspaceCreate(ctx context.Context, name, branch string) error {
 	fmt.Fprintf(a.Out, "  Host:   %s\n", ws.HostPath)
 	fmt.Fprintf(a.Out, "  Guest:  %s\n", ws.GuestPath)
 	fmt.Fprintf(a.Out, "  Branch: %s\n", ws.Branch)
-	return nil
+	if runTarget == "" {
+		return nil
+	}
+	fmt.Fprintf(a.Out, "Running target %s in workspace %s...\n", runTarget, ws.Name)
+	return a.execute(ctx, p, ws.Name, ws.GuestPath, inv, !noStart && p.Config.VM.AutoStartEnabled())
 }
 
 func newWorkspaceListCmd(app *App) *cobra.Command {
