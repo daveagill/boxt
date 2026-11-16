@@ -459,7 +459,9 @@ and caches, but have their own checkout, branch, HEAD and index.
 boxt workspace create feature-a
 boxt workspace create feature-b --branch experiment/b
 boxt workspace create agent-1 --run opencode
+boxt workspace create agent-1 --seed
 boxt workspace list
+boxt workspace seed agent-1
 boxt workspace path feature-a
 boxt workspace run feature-a test
 boxt workspace run feature-a -- npm test
@@ -468,6 +470,17 @@ boxt workspace merge feature-a
 boxt workspace merge feature-a --remove
 boxt workspace remove feature-a
 ```
+
+`boxt workspace list` shows each workspace's branch, short HEAD, dirty state and
+ahead/behind counts relative to the default workspace's current branch. Missing,
+broken and locked worktrees are reported without failing the whole list.
+
+`--seed` (or `boxt workspace seed <name>`) copies ignored files from the default
+workspace into a named workspace after the worktree is created and before
+`--run`. Only ignored files are copied (`git ls-files --others --ignored
+--exclude-standard`), never tracked source. Existing target paths are left alone
+and reported, and symlinks or special files are skipped. This is useful for
+local `.env` files, dependency caches and build output.
 
 The default branch name is `boxt/<workspace>`. Pass `--branch` to create or check
 out a different branch. `--run <target>` resolves the target before the worktree

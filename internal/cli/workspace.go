@@ -25,6 +25,7 @@ func newWorkspaceCmd(app *App) *cobra.Command {
 	cmd.AddCommand(newWorkspaceRemoveCmd(app))
 	cmd.AddCommand(newWorkspacePathCmd(app))
 	cmd.AddCommand(newWorkspaceRunCmd(app))
+	cmd.AddCommand(newWorkspaceSeedCmd(app))
 	cmd.AddCommand(newWorkspaceShellCmd(app))
 	return cmd
 }
@@ -41,21 +42,23 @@ func newWorkspaceCreateCmd(app *App) *cobra.Command {
 	var branch string
 	var runTarget string
 	var noStart bool
+	var seed bool
 	cmd := &cobra.Command{
 		Use:   "create name",
 		Short: "Create a named workspace backed by a Git worktree",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.workspaceCreate(cmd.Context(), args[0], branch, runTarget, noStart)
+			return app.workspaceCreate(cmd.Context(), args[0], branch, runTarget, seed, noStart)
 		},
 	}
 	cmd.Flags().StringVar(&branch, "branch", "", "branch to create or check out (default: boxt/<name>)")
 	cmd.Flags().StringVar(&runTarget, "run", "", "run a configured target in the new workspace")
+	cmd.Flags().BoolVar(&seed, "seed", false, "copy ignored files from the default workspace")
 	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not create or start the VM automatically for --run")
 	return cmd
 }
 
-func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget string, noStart bool) error {
+func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget string, seed, noStart bool) error {
 	if err := workspace.ValidateName(name); err != nil {
 		return err
 	}
@@ -86,6 +89,13 @@ func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget strin
 	fmt.Fprintf(a.Out, "  Host:   %s\n", ws.HostPath)
 	fmt.Fprintf(a.Out, "  Guest:  %s\n", ws.GuestPath)
 	fmt.Fprintf(a.Out, "  Branch: %s\n", ws.Branch)
+	if seed {
+		result, err := mgr.Seed(ctx, name)
+		if err != nil {
+			return err
+		}
+		a.printSeedResult(result)
+	}
 	if runTarget == "" {
 		return nil
 	}
@@ -124,13 +134,17 @@ func (a *App) workspaceList(ctx context.Context) error {
 	all := append([]workspace.Workspace{mgr.Default(ctx)}, named...)
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPATH\tBRANCH\tSTATUS")
+	fmt.Fprintln(w, "NAME\tPATH\tBRANCH\tHEAD\tDIRTY\tAHEAD/BEHIND\tSTATUS")
 	for _, ws := range all {
-		branch := ws.Branch
-		if branch == "" {
-			branch = "-"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", ws.Name, ws.HostPath, branch, workspaceStatus(ws))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			ws.Name,
+			ws.HostPath,
+			workspaceBranch(ws),
+			workspaceHead(ws),
+			workspaceDirty(ws),
+			workspaceAheadBehind(ws),
+			workspaceStatus(ws),
+		)
 	}
 	if err := w.Flush(); err != nil {
 		return err
@@ -139,6 +153,37 @@ func (a *App) workspaceList(ctx context.Context) error {
 		fmt.Fprintln(a.Out, "\nNote: named workspaces require a Git repository.")
 	}
 	return nil
+}
+
+func workspaceBranch(ws workspace.Workspace) string {
+	if ws.Branch == "" {
+		return "-"
+	}
+	return ws.Branch
+}
+
+func workspaceHead(ws workspace.Workspace) string {
+	if ws.Head == "" {
+		return "-"
+	}
+	return ws.Head
+}
+
+func workspaceDirty(ws workspace.Workspace) string {
+	if ws.Missing || ws.Broken {
+		return "-"
+	}
+	if ws.Dirty {
+		return "dirty"
+	}
+	return "clean"
+}
+
+func workspaceAheadBehind(ws workspace.Workspace) string {
+	if ws.Default || !ws.Compared {
+		return "-"
+	}
+	return fmt.Sprintf("%d/%d", ws.Ahead, ws.Behind)
 }
 
 func workspaceStatus(ws workspace.Workspace) string {
@@ -278,6 +323,47 @@ func (a *App) workspacePath(ctx context.Context, name string) error {
 	}
 	fmt.Fprintln(a.Out, ws.HostPath)
 	return nil
+}
+
+func newWorkspaceSeedCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "seed name",
+		Short: "Copy ignored files from the default workspace into a workspace",
+		Long: `Copy ignored files (for example .env, node_modules or caches) from the default
+workspace into a named workspace. Tracked files are never copied, existing target
+paths are never overwritten, and symlinks or special files are skipped.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.workspaceSeed(cmd.Context(), args[0])
+		},
+	}
+}
+
+func (a *App) workspaceSeed(ctx context.Context, name string) error {
+	p, err := a.loadProject()
+	if err != nil {
+		return err
+	}
+	mgr, _, err := a.workspaceManager(p)
+	if err != nil {
+		return err
+	}
+	result, err := mgr.Seed(ctx, name)
+	if err != nil {
+		return err
+	}
+	a.printSeedResult(result)
+	return nil
+}
+
+func (a *App) printSeedResult(result workspace.SeedResult) {
+	fmt.Fprintf(a.Out, "Seeded %d ignored file(s).\n", result.Copied)
+	if len(result.Conflicts) > 0 {
+		fmt.Fprintf(a.Err, "Skipped %d existing path(s): %s\n", len(result.Conflicts), strings.Join(result.Conflicts, ", "))
+	}
+	for _, warning := range result.Skipped {
+		fmt.Fprintf(a.Err, "Warning: %s\n", warning)
+	}
 }
 
 func newWorkspaceRunCmd(app *App) *cobra.Command {

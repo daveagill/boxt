@@ -66,7 +66,7 @@ func TestWorkspaceCreateListPath(t *testing.T) {
 	if code := f2.run(t, "workspace", "list"); code != 0 {
 		t.Fatalf("list exit %d: %s", code, f2.errOut.String())
 	}
-	for _, want := range []string{"NAME", "default", "feature-a", wantPath, "boxt/feature-a", "ready"} {
+	for _, want := range []string{"NAME", "PATH", "BRANCH", "HEAD", "DIRTY", "AHEAD/BEHIND", "STATUS", "default", "feature-a", wantPath, "boxt/feature-a", "clean", "ready"} {
 		if !strings.Contains(f2.out.String(), want) {
 			t.Fatalf("list missing %q:\n%s", want, f2.out.String())
 		}
@@ -488,6 +488,96 @@ func TestWorkspaceCreateBranchAndRun(t *testing.T) {
 	}
 	if !endsWith(f.shellCommand(t).Args, []string{"--", "npm", "test"}) {
 		t.Fatalf("unexpected args: %#v", f.shellCommand(t).Args)
+	}
+}
+
+func gitRunInTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	full := append([]string{"-C", dir}, args...)
+	if out, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: full}); err != nil {
+		t.Fatalf("git %v: %v (%s)", args, err, out)
+	}
+}
+
+func TestWorkspaceCreateSeed(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".gitignore"), []byte(".env\nnode_modules/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, f.project.Root, "add", ".gitignore")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "ignore")
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".env"), []byte("SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(f.project.Root, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.project.Root, "node_modules", "pkg", "index.js"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "workspace", "create", "agent-1", "--seed"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "agent-1")
+	for _, rel := range []string{".env", "node_modules/pkg/index.js"} {
+		if _, err := os.Stat(filepath.Join(path, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("seeded file %s missing: %v", rel, err)
+		}
+	}
+	if !strings.Contains(f.out.String(), "Seeded 2 ignored file(s)") {
+		t.Fatalf("seed summary missing:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceSeedCommand(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, f.project.Root, "add", ".gitignore")
+	gitRunInTest(t, f.project.Root, "commit", "-q", "-m", "ignore")
+	if err := os.WriteFile(filepath.Join(f.project.Root, ".env"), []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "workspace", "create", "agent-1"); code != 0 {
+		t.Fatalf("create failed")
+	}
+	if code := f.run(t, "workspace", "seed", "agent-1"); code != 0 {
+		t.Fatalf("seed exit %d: %s", code, f.errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(f.workspaceHostRoot(), "agent-1", ".env")); err != nil {
+		t.Fatalf(".env not seeded: %v", err)
+	}
+	f.errOut.Reset()
+	if code := f.run(t, "workspace", "seed", "default"); code != 1 {
+		t.Fatalf("seed default exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "default workspace") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestWorkspaceListShowsDirtyAndDivergence(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "agent-1"); code != 0 {
+		t.Fatalf("create failed")
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "agent-1")
+	if err := os.WriteFile(filepath.Join(path, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRunInTest(t, path, "add", "feature.txt")
+	gitRunInTest(t, path, "commit", "-q", "-m", "feature")
+	if err := os.WriteFile(filepath.Join(path, "untracked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.run(t, "workspace", "list"); code != 0 {
+		t.Fatalf("list exit %d: %s", code, f.errOut.String())
+	}
+	for _, want := range []string{"dirty", "1/0", "clean"} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Fatalf("list missing %q:\n%s", want, f.out.String())
+		}
 	}
 }
 

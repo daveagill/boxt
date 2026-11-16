@@ -159,6 +159,13 @@ examples/node-app/        complete runnable example
   root, reject detached HEAD and diverged histories before changing refs, and
   never force/squash/create merge commits. `--remove` uses the safe worktree
   removal path and never deletes the branch.
+- `workspace list`/`status` summaries are best-effort: report dirty state,
+  short HEAD and ahead/behind vs the default branch, but never fail the whole
+  list for one missing, detached or broken worktree.
+- Ignored-file seeding copies only `git ls-files --others --ignored
+  --exclude-standard` paths from the default workspace, never tracked files,
+  never overwrites existing target paths, and skips symlinks/special files.
+  `create --seed` happens after worktree creation and before `--run`/hooks.
 - Store the owning project root in the worktree's Git admin directory as
   `boxt-project`, so commands run from inside a workspace resolve the same VM.
 - Reject workspace names that are absolute, traversal-based, reserved (`default`)

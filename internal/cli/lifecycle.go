@@ -433,13 +433,17 @@ func (a *App) status(ctx context.Context) error {
 	}
 	fmt.Fprintln(a.Out, "Workspaces:")
 	w := tabwriter.NewWriter(a.Out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "  NAME\tPATH\tBRANCH\tSTATUS")
+	fmt.Fprintln(w, "  NAME\tPATH\tBRANCH\tHEAD\tDIRTY\tAHEAD/BEHIND\tSTATUS")
 	for _, ws := range append([]workspace.Workspace{mgr.Default(ctx)}, named...) {
-		branch := ws.Branch
-		if branch == "" {
-			branch = "-"
-		}
-		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", ws.Name, ws.HostPath, branch, workspaceStatus(ws))
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			ws.Name,
+			ws.HostPath,
+			workspaceBranch(ws),
+			workspaceHead(ws),
+			workspaceDirty(ws),
+			workspaceAheadBehind(ws),
+			workspaceStatus(ws),
+		)
 	}
 	if err := w.Flush(); err != nil {
 		return err

@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/daveagill/boxt/internal/command"
@@ -38,6 +40,7 @@ func ValidateName(name string) error {
 type Workspace struct {
 	Name       string
 	Branch     string
+	Head       string
 	HostPath   string
 	GuestPath  string
 	Default    bool
@@ -45,6 +48,10 @@ type Workspace struct {
 	Broken     bool
 	Locked     bool
 	LockReason string
+	Dirty      bool
+	Ahead      int
+	Behind     int
+	Compared   bool
 }
 
 // Manager operates on one project's named workspaces.
@@ -97,12 +104,20 @@ func (m *Manager) Default(ctx context.Context) Workspace {
 		if branch, err := m.Git.Output(ctx, m.ProjectRoot, "symbolic-ref", "--short", "HEAD"); err == nil {
 			ws.Branch = strings.TrimSpace(branch)
 		}
+		if head, err := m.Git.Output(ctx, m.ProjectRoot, "rev-parse", "--short", "HEAD"); err == nil {
+			ws.Head = strings.TrimSpace(head)
+		}
+		if dirty, err := m.dirty(ctx, m.ProjectRoot); err == nil {
+			ws.Dirty = dirty
+		}
 	}
 	return ws
 }
 
 // List returns named workspaces managed by boxt, sorted by name. A non-Git
-// project has no named workspaces rather than an error.
+// project has no named workspaces rather than an error. Dirty state and
+// ahead/behind counts are best-effort so one missing or detached worktree does
+// not fail the whole list.
 func (m *Manager) List(ctx context.Context) ([]Workspace, error) {
 	root, err := m.repoRoot(ctx)
 	if err != nil {
@@ -138,6 +153,7 @@ func (m *Manager) List(ctx context.Context) ([]Workspace, error) {
 		ws := Workspace{
 			Name:       name,
 			Branch:     raw.Branch,
+			Head:       shortHash(raw.Head),
 			HostPath:   raw.Path,
 			GuestPath:  m.GuestPath(name),
 			Missing:    raw.Prunable,
@@ -158,10 +174,70 @@ func (m *Manager) List(ctx context.Context) ([]Workspace, error) {
 			ws.Missing = false
 			ws.Broken = true
 		}
+		if !ws.Missing && !ws.Broken {
+			if dirty, err := m.dirty(ctx, ws.HostPath); err == nil {
+				ws.Dirty = dirty
+			}
+		}
 		workspaces = append(workspaces, ws)
 	}
 	sort.Slice(workspaces, func(i, j int) bool { return workspaces[i].Name < workspaces[j].Name })
+
+	defaultBranch := m.Default(ctx).Branch
+	for i := range workspaces {
+		ws := &workspaces[i]
+		if ws.Missing || ws.Broken || ws.Branch == "" || defaultBranch == "" {
+			continue
+		}
+		ahead, behind, err := m.aheadBehind(ctx, root, defaultBranch, ws.Branch)
+		if err == nil {
+			ws.Ahead = ahead
+			ws.Behind = behind
+			ws.Compared = true
+		}
+	}
 	return workspaces, nil
+}
+
+func (m *Manager) dirty(ctx context.Context, dir string) (bool, error) {
+	status, err := m.Git.Output(ctx, dir, "status", "--porcelain", "--ignore-submodules=none")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(status, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *Manager) aheadBehind(ctx context.Context, root, target, branch string) (ahead, behind int, err error) {
+	out, err := m.Git.Output(ctx, root, "rev-list", "--left-right", "--count", target+"..."+branch)
+	if err != nil {
+		return 0, 0, err
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("unexpected rev-list output %q", out)
+	}
+	behind, err = strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	ahead, err = strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, 0, err
+	}
+	return ahead, behind, nil
+}
+
+func shortHash(hash string) string {
+	hash = strings.TrimSpace(hash)
+	if len(hash) > 7 {
+		return hash[:7]
+	}
+	return hash
 }
 
 // Get resolves a workspace by name. The default workspace is implicit.
@@ -449,6 +525,109 @@ func (m *Manager) isAncestor(ctx context.Context, root, ancestor, descendant str
 	return fmt.Errorf("check fast-forward ancestry: %w", err)
 }
 
+// SeedResult reports ignored files copied from the default workspace.
+type SeedResult struct {
+	Copied    int
+	Conflicts []string
+	Skipped   []string
+}
+
+// Seed copies ignored files from the default workspace into a named workspace.
+// It never copies tracked files, never overwrites an existing target path, and
+// never follows symlinks. Source directories/files that do not exist are simply
+// absent from Git's ignored-file list.
+func (m *Manager) Seed(ctx context.Context, name string) (SeedResult, error) {
+	if name == DefaultName {
+		return SeedResult{}, &ErrDefaultWorkspace{}
+	}
+	if err := ValidateName(name); err != nil {
+		return SeedResult{}, err
+	}
+	if _, err := m.repoRoot(ctx); err != nil {
+		return SeedResult{}, err
+	}
+	ws, err := m.Get(ctx, name)
+	if err != nil {
+		return SeedResult{}, err
+	}
+	out, err := m.Git.Output(ctx, m.ProjectRoot, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+	if err != nil {
+		return SeedResult{}, fmt.Errorf("list ignored files: %w", err)
+	}
+	result := SeedResult{}
+	for _, rel := range strings.Split(out, "\x00") {
+		if rel == "" {
+			continue
+		}
+		clean := filepath.Clean(filepath.FromSlash(rel))
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			result.Skipped = append(result.Skipped, rel+": unsafe path")
+			continue
+		}
+		src := filepath.Join(m.ProjectRoot, clean)
+		dst := filepath.Join(ws.HostPath, clean)
+		if rel == "." || src == m.ProjectRoot {
+			continue
+		}
+		info, err := os.Lstat(src)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return SeedResult{}, fmt.Errorf("inspect ignored file %s: %w", rel, err)
+		}
+		mode := info.Mode()
+		if mode&os.ModeSymlink != 0 {
+			result.Skipped = append(result.Skipped, rel+": symlink skipped")
+			continue
+		}
+		if !mode.IsRegular() {
+			result.Skipped = append(result.Skipped, rel+": special file skipped")
+			continue
+		}
+		if _, err := os.Lstat(dst); err == nil {
+			result.Conflicts = append(result.Conflicts, rel)
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return SeedResult{}, fmt.Errorf("inspect seed destination %s: %w", rel, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return SeedResult{}, fmt.Errorf("create seed directory for %s: %w", rel, err)
+		}
+		if err := copyFile(src, dst, mode.Perm()); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				result.Conflicts = append(result.Conflicts, rel)
+				continue
+			}
+			return SeedResult{}, fmt.Errorf("seed ignored file %s: %w", rel, err)
+		}
+		result.Copied++
+	}
+	return result, nil
+}
+
+func copyFile(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+	return os.Chmod(dst, perm)
+}
+
 // Remove deletes a named worktree. Dirty worktrees require force. Branch refs
 // are always retained and the directory is never removed with a manual rm.
 func (m *Manager) Remove(ctx context.Context, name string, force bool) (Workspace, error) {
@@ -512,6 +691,7 @@ func (m *Manager) Remove(ctx context.Context, name string, force bool) (Workspac
 
 type rawWorktree struct {
 	Path        string
+	Head        string
 	Branch      string
 	Locked      bool
 	LockReason  string
@@ -575,6 +755,7 @@ func parseWorktrees(out string) []rawWorktree {
 		case strings.HasPrefix(field, "worktree "):
 			cur.Path = strings.TrimPrefix(field, "worktree ")
 		case strings.HasPrefix(field, "HEAD "):
+			cur.Head = strings.TrimPrefix(field, "HEAD ")
 		case strings.HasPrefix(field, "branch "):
 			cur.Branch = strings.TrimPrefix(strings.TrimPrefix(field, "branch "), "refs/heads/")
 		case field == "detached", field == "bare":

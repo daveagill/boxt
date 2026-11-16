@@ -681,6 +681,177 @@ func TestMergeDefaultWorkspaceRefused(t *testing.T) {
 	}
 }
 
+func TestListReportsDirtyHeadAndAheadBehind(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "add", "feature.txt")
+	runGit(t, ws.HostPath, "commit", "-q", "-m", "feature")
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "untracked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	list, err := m.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list = %#v", list)
+	}
+	got := list[0]
+	if len(got.Head) != 7 || !got.Dirty || !got.Compared || got.Ahead != 1 || got.Behind != 0 {
+		t.Fatalf("workspace summary = %#v", got)
+	}
+	def := m.Default(context.Background())
+	if len(def.Head) != 7 || def.Dirty {
+		t.Fatalf("default summary = %#v", def)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "root-untracked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if def := m.Default(context.Background()); !def.Dirty {
+		t.Fatalf("default dirty not reported: %#v", def)
+	}
+	if err := os.Remove(filepath.Join(repo, "root-untracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "root.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "root.txt")
+	runGit(t, repo, "commit", "-q", "-m", "root change")
+	list, err = m.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !list[0].Compared || list[0].Behind != 1 {
+		t.Fatalf("behind not reported: %#v", list)
+	}
+}
+
+func TestListHandlesDetachedAndMissing(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "detached", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "checkout", "--detach", "-q")
+	if _, err := m.Create(context.Background(), "gone", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(m.HostRoot, "gone")); err != nil {
+		t.Fatal(err)
+	}
+	list, err := m.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	byName := map[string]Workspace{}
+	for _, ws := range list {
+		byName[ws.Name] = ws
+	}
+	if ws := byName["detached"]; ws.Branch != "" || ws.Head == "" || ws.Compared {
+		t.Fatalf("detached = %#v", ws)
+	}
+	if ws := byName["gone"]; !ws.Missing {
+		t.Fatalf("missing = %#v", ws)
+	}
+}
+
+func TestSeedCopiesOnlyIgnoredFiles(t *testing.T) {
+	repo := initRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".env\nnode_modules/\ncache/\nlink\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "ignore")
+	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "node_modules", "pkg", "index.js"), []byte("module\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "cache", "a"), []byte("cache\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkCreated := os.Symlink(filepath.Join(repo, "README.md"), filepath.Join(repo, "link")) == nil
+
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, ".env"), []byte("KEEP=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := m.Seed(context.Background(), "feature-a")
+	if err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if result.Copied != 2 {
+		t.Fatalf("copied = %d, result = %#v", result.Copied, result)
+	}
+	if len(result.Conflicts) != 1 || result.Conflicts[0] != ".env" {
+		t.Fatalf("conflicts = %#v", result.Conflicts)
+	}
+	data, err := os.ReadFile(filepath.Join(ws.HostPath, ".env"))
+	if err != nil || string(data) != "KEEP=1\n" {
+		t.Fatalf("existing .env overwritten: %q %v", data, err)
+	}
+	data, err = os.ReadFile(filepath.Join(ws.HostPath, "node_modules", "pkg", "index.js"))
+	if err != nil || string(data) != "module\n" {
+		t.Fatalf("nested ignored file not copied: %q %v", data, err)
+	}
+	info, err := os.Stat(filepath.Join(ws.HostPath, "node_modules", "pkg", "index.js"))
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("permissions not preserved: %v %v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(ws.HostPath, "cache", "a")); err != nil {
+		t.Fatalf("cache not copied: %v", err)
+	}
+	if linkCreated {
+		if _, err := os.Lstat(filepath.Join(ws.HostPath, "link")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("symlink was copied: %v", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".env")); err != nil {
+		t.Fatal("seed modified the default workspace")
+	}
+}
+
+func TestSeedRefusesDefaultAndMissing(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	if _, err := m.Seed(context.Background(), "default"); err == nil {
+		t.Fatal("seeded the default workspace")
+	} else {
+		var def *ErrDefaultWorkspace
+		if !errors.As(err, &def) {
+			t.Fatalf("expected ErrDefaultWorkspace, got %v", err)
+		}
+	}
+	if _, err := m.Seed(context.Background(), "nope"); err == nil {
+		t.Fatal("seeded a missing workspace")
+	} else {
+		var notFound *ErrNotFound
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected ErrNotFound, got %v", err)
+		}
+	}
+}
+
 func TestParseWorktrees(t *testing.T) {
 	out := "worktree /repo\x00HEAD abc\x00branch refs/heads/master\x00\x00" +
 		"worktree /ws/one\x00HEAD def\x00branch refs/heads/boxt/one\x00locked busy\x00\x00" +

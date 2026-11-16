@@ -72,7 +72,10 @@ func TestIntegrationWorkspaceVisibleOnHostAndGuest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("host-and-guest\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitRun(t, repo, "add", "README.md")
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "README.md", ".gitignore")
 	gitRun(t, repo, "commit", "-q", "-m", "initial")
 
 	hostRoot := filepath.Join(base, "workspaces", "0123456789abcdef")
@@ -108,6 +111,13 @@ func TestIntegrationWorkspaceVisibleOnHostAndGuest(t *testing.T) {
 	if status := gitRun(t, repo, "status", "--porcelain"); status != "" {
 		t.Fatalf("parent repository sees external worktree: %q", status)
 	}
+	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("SEEDED=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Seed(ctx, "feature-a"); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	assertGuestFile(t, ctx, client, name, ws.GuestPath+"/.env", "SEEDED=1")
 
 	guestReadme := ws.GuestPath + "/README.md"
 	assertGuestFile(t, ctx, client, name, "/workspace/README.md", "host-and-guest")
