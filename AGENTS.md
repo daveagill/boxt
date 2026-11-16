@@ -151,6 +151,10 @@ examples/node-app/        complete runnable example
 - Worktrees live outside the project checkout under the project-scoped data dir.
 - Default branch: `boxt/<workspace>`; `--branch` may override. Recreating a
   workspace reuses an existing branch if present.
+- `boxt workspace merge` is fast-forward only. Require clean source and project
+  root, reject detached HEAD and diverged histories before changing refs, and
+  never force/squash/create merge commits. `--remove` uses the safe worktree
+  removal path and never deletes the branch.
 - Store the owning project root in the worktree's Git admin directory as
   `boxt-project`, so commands run from inside a workspace resolve the same VM.
 - Reject workspace names that are absolute, traversal-based, reserved (`default`)

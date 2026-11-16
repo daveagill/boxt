@@ -331,6 +331,124 @@ func (m *Manager) rollbackCreated(ctx context.Context, root, path, branch string
 	return Workspace{}, cause
 }
 
+// MergeResult describes a successful fast-forward merge.
+type MergeResult struct {
+	Workspace      Workspace
+	SourceBranch   string
+	TargetBranch   string
+	OldHead        string
+	NewHead        string
+	AlreadyCurrent bool
+	Removed        bool
+	RemoveErr      error
+}
+
+// Merge fast-forwards the branch checked out in the project root to the named
+// workspace's branch. It never creates merge commits, rebases, squashes or
+// forces refs. When remove is set, the worktree is removed through the same safe
+// path as Remove after the merge, keeping the branch.
+func (m *Manager) Merge(ctx context.Context, name, into string, remove bool) (MergeResult, error) {
+	if name == DefaultName {
+		return MergeResult{}, &ErrDefaultWorkspace{}
+	}
+	if err := ValidateName(name); err != nil {
+		return MergeResult{}, err
+	}
+	root, err := m.repoRoot(ctx)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	ws, err := m.Get(ctx, name)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	if ws.Locked {
+		return MergeResult{}, &ErrLocked{Name: name, Path: ws.HostPath, Reason: ws.LockReason}
+	}
+	if ws.Branch == "" {
+		return MergeResult{}, &ErrMergeDetached{Role: "workspace " + name}
+	}
+
+	target, err := m.Git.Output(ctx, root, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return MergeResult{}, &ErrMergeDetached{Role: "project root"}
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return MergeResult{}, &ErrMergeDetached{Role: "project root"}
+	}
+	if into != "" && into != target {
+		return MergeResult{}, &ErrMergeTarget{Requested: into, Current: target}
+	}
+	if ws.Branch == target {
+		return MergeResult{}, fmt.Errorf("workspace %s already uses the target branch %s", name, target)
+	}
+
+	if err := m.requireClean(ctx, ws.HostPath, "workspace "+name); err != nil {
+		return MergeResult{}, err
+	}
+	if err := m.requireClean(ctx, root, "project root"); err != nil {
+		return MergeResult{}, err
+	}
+
+	if err := m.isAncestor(ctx, root, target, ws.Branch); err != nil {
+		return MergeResult{}, err
+	}
+	oldHead, err := m.Git.Output(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("inspect target branch: %w", err)
+	}
+	if strings.HasPrefix(ws.Branch, "-") {
+		return MergeResult{}, fmt.Errorf("invalid source branch %q", ws.Branch)
+	}
+	if _, err := m.Git.Output(ctx, root, "merge", "--ff-only", ws.Branch); err != nil {
+		return MergeResult{}, fmt.Errorf("fast-forward %s into %s: %w", ws.Branch, target, err)
+	}
+	newHead, err := m.Git.Output(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("inspect merged branch: %w", err)
+	}
+
+	result := MergeResult{
+		Workspace:      ws,
+		SourceBranch:   ws.Branch,
+		TargetBranch:   target,
+		OldHead:        strings.TrimSpace(oldHead),
+		NewHead:        strings.TrimSpace(newHead),
+		AlreadyCurrent: strings.TrimSpace(oldHead) == strings.TrimSpace(newHead),
+	}
+	if remove {
+		if _, err := m.Remove(ctx, name, false); err != nil {
+			result.RemoveErr = err
+		} else {
+			result.Removed = true
+		}
+	}
+	return result, nil
+}
+
+func (m *Manager) requireClean(ctx context.Context, dir, role string) error {
+	status, err := m.Git.Output(ctx, dir, "status", "--porcelain", "--ignore-submodules=none")
+	if err != nil {
+		return fmt.Errorf("check %s status: %w", role, err)
+	}
+	if status != "" {
+		return &ErrMergeDirty{Role: role, Path: dir}
+	}
+	return nil
+}
+
+func (m *Manager) isAncestor(ctx context.Context, root, ancestor, descendant string) error {
+	_, err := m.Git.Output(ctx, root, "merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return nil
+	}
+	if exitStatus(err) == 1 {
+		return &ErrNotFastForward{Source: descendant, Target: ancestor}
+	}
+	return fmt.Errorf("check fast-forward ancestry: %w", err)
+}
+
 // Remove deletes a named worktree. Dirty worktrees require force. Branch refs
 // are always retained and the directory is never removed with a manual rm.
 func (m *Manager) Remove(ctx context.Context, name string, force bool) (Workspace, error) {
@@ -632,7 +750,51 @@ func (e *ErrBroken) Hint() string {
 type ErrDefaultWorkspace struct{}
 
 func (e *ErrDefaultWorkspace) Error() string {
-	return "the default workspace is implicit and cannot be removed"
+	return "the default workspace is implicit and cannot be created, merged, seeded or removed"
+}
+
+// ErrMergeDetached refuses to merge without a branch to integrate.
+type ErrMergeDetached struct{ Role string }
+
+func (e *ErrMergeDetached) Error() string {
+	return fmt.Sprintf("cannot merge: %s has a detached HEAD", e.Role)
+}
+func (e *ErrMergeDetached) Hint() string {
+	return "Check out a branch first; boxt only fast-forwards named branches."
+}
+
+// ErrMergeDirty refuses to merge with uncommitted tracked or untracked files.
+type ErrMergeDirty struct {
+	Role string
+	Path string
+}
+
+func (e *ErrMergeDirty) Error() string {
+	return fmt.Sprintf("cannot merge: %s has uncommitted changes", e.Role)
+}
+func (e *ErrMergeDirty) Hint() string {
+	return fmt.Sprintf("Commit or stash changes in %s, then try again. Ignored files may remain.", e.Path)
+}
+
+// ErrMergeTarget refuses --into a branch that is not checked out in the project
+// root.
+type ErrMergeTarget struct{ Requested, Current string }
+
+func (e *ErrMergeTarget) Error() string {
+	return fmt.Sprintf("cannot merge into %s: the project root has %s checked out", e.Requested, e.Current)
+}
+func (e *ErrMergeTarget) Hint() string {
+	return fmt.Sprintf("Check out %s in the project root, or merge into the current branch %s.", e.Requested, e.Current)
+}
+
+// ErrNotFastForward refuses a merge that would need a merge commit.
+type ErrNotFastForward struct{ Source, Target string }
+
+func (e *ErrNotFastForward) Error() string {
+	return fmt.Sprintf("cannot fast-forward %s to %s: their histories have diverged", e.Target, e.Source)
+}
+func (e *ErrNotFastForward) Hint() string {
+	return "No refs were changed. Rebase or merge the branch manually with Git, or recreate the workspace from the current target branch."
 }
 
 func workspaceChanges(status string) (dirty, ignored bool) {

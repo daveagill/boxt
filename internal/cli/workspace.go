@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ func newWorkspaceCmd(app *App) *cobra.Command {
 	}
 	cmd.AddCommand(newWorkspaceCreateCmd(app))
 	cmd.AddCommand(newWorkspaceListCmd(app))
+	cmd.AddCommand(newWorkspaceMergeCmd(app))
 	cmd.AddCommand(newWorkspaceRemoveCmd(app))
 	cmd.AddCommand(newWorkspacePathCmd(app))
 	cmd.AddCommand(newWorkspaceRunCmd(app))
@@ -128,6 +130,66 @@ func workspaceStatus(ws workspace.Workspace) string {
 	default:
 		return "ready"
 	}
+}
+
+func newWorkspaceMergeCmd(app *App) *cobra.Command {
+	var into string
+	var remove bool
+	cmd := &cobra.Command{
+		Use:   "merge name [--into branch] [--remove]",
+		Short: "Fast-forward the project root to a workspace branch",
+		Long: `Fast-forward the branch checked out in the project root to a workspace branch.
+
+The merge is fast-forward only: boxt never creates merge commits, rebases,
+squashes or forces refs. The workspace and project root must be clean (ignored
+files may remain). Use --remove to delete the worktree after a successful merge;
+the Git branch is always kept.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.workspaceMerge(cmd.Context(), args[0], into, remove)
+		},
+	}
+	cmd.Flags().StringVar(&into, "into", "", "target branch (must be checked out in the project root)")
+	cmd.Flags().BoolVar(&remove, "remove", false, "remove the workspace worktree after a successful merge")
+	return cmd
+}
+
+func (a *App) workspaceMerge(ctx context.Context, name, into string, remove bool) error {
+	p, err := a.loadProject()
+	if err != nil {
+		return err
+	}
+	mgr, _, err := a.workspaceManager(p)
+	if err != nil {
+		return err
+	}
+	result, err := mgr.Merge(ctx, name, into, remove)
+	if err != nil {
+		return err
+	}
+	if result.AlreadyCurrent {
+		fmt.Fprintf(a.Out, "Already up to date: %s is at %s.\n", result.TargetBranch, shortHead(result.NewHead))
+	} else {
+		fmt.Fprintf(a.Out, "Fast-forwarded %s to %s.\n", result.TargetBranch, result.SourceBranch)
+		fmt.Fprintf(a.Out, "  HEAD: %s -> %s\n", shortHead(result.OldHead), shortHead(result.NewHead))
+	}
+	if remove {
+		if result.Removed {
+			fmt.Fprintf(a.Out, "Removed workspace %s.\n", result.Workspace.Name)
+			fmt.Fprintf(a.Out, "Git branch %s was kept.\n", result.SourceBranch)
+		} else if result.RemoveErr != nil {
+			fmt.Fprintf(a.Err, "Warning: merge succeeded, but workspace %s was kept: %v\n", result.Workspace.Name, result.RemoveErr)
+		}
+	}
+	return nil
+}
+
+func shortHead(head string) string {
+	head = strings.TrimSpace(head)
+	if len(head) > 7 {
+		return head[:7]
+	}
+	return head
 }
 
 func newWorkspaceRemoveCmd(app *App) *cobra.Command {

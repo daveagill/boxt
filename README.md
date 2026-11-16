@@ -457,6 +457,8 @@ boxt workspace path feature-a
 boxt workspace run feature-a test
 boxt workspace run feature-a -- npm test
 boxt workspace shell feature-a
+boxt workspace merge feature-a
+boxt workspace merge feature-a --remove
 boxt workspace remove feature-a
 ```
 
@@ -464,6 +466,13 @@ The default branch name is `boxt/<workspace>`. Pass `--branch` to create or chec
 out a different branch. The default workspace is the project root, always exists,
 and cannot be created or removed. It can be addressed as `default` in
 `workspace path|run|shell`.
+
+`boxt workspace merge <name>` fast-forwards the branch currently checked out in
+the project root to the workspace branch. It refuses diverged histories rather
+than creating a merge commit, and it refuses a dirty workspace or project root.
+`--into <branch>` must name the branch already checked out in the project root.
+`--remove` removes the worktree only after a successful merge; the Git branch is
+kept. boxt never rebases, squashes or forces a merge.
 
 `boxt workspace remove` refuses to discard uncommitted changes or ignored local
 files such as `.env` and caches; `--force` deliberately discards them. Git

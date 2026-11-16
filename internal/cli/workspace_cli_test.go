@@ -398,6 +398,69 @@ func TestWorkspaceRunUnexpectedBeforeDash(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMerge(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed: %s", f.errOut.String())
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "feature-a")
+	if err := os.WriteFile(filepath.Join(path, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "feature.txt"}, {"commit", "-q", "-m", "feature"}} {
+		if out, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: append([]string{"-C", path}, args...)}); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	f.out.Reset()
+	if code := f.run(t, "workspace", "merge", "feature-a"); code != 0 {
+		t.Fatalf("merge exit %d: %s", code, f.errOut.String())
+	}
+	for _, want := range []string{"Fast-forwarded", "boxt/feature-a", "HEAD:"} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Fatalf("merge output missing %q:\n%s", want, f.out.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.project.Root, "feature.txt")); err != nil {
+		t.Fatalf("feature not merged into project root: %v", err)
+	}
+}
+
+func TestWorkspaceMergeRemove(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed")
+	}
+	path := filepath.Join(f.workspaceHostRoot(), "feature-a")
+	if err := os.WriteFile(filepath.Join(path, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "feature.txt"}, {"commit", "-q", "-m", "feature"}} {
+		if out, err := command.Output(context.Background(), command.ExecRunner{}, command.Command{Name: "git", Args: append([]string{"-C", path}, args...)}); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	if code := f.run(t, "workspace", "merge", "feature-a", "--remove"); code != 0 {
+		t.Fatalf("merge exit %d: %s", code, f.errOut.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("workspace not removed")
+	}
+	if !strings.Contains(f.out.String(), "Git branch boxt/feature-a was kept") {
+		t.Fatalf("branch retention missing:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceMergeDefaultRefused(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "merge", "default"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "default workspace") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
 func TestWorkspaceShell(t *testing.T) {
 	f := newWorkspaceFixture(t)
 	f.runner.status = "Running"

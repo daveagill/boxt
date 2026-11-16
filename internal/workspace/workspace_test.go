@@ -431,6 +431,256 @@ func TestRemoveDefaultAndMissing(t *testing.T) {
 	}
 }
 
+func TestMergeFastForward(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "add", "feature.txt")
+	runGit(t, ws.HostPath, "commit", "-q", "-m", "feature")
+	wantHead := runGit(t, ws.HostPath, "rev-parse", "HEAD")
+	current := runGit(t, repo, "symbolic-ref", "--short", "HEAD")
+
+	res, err := m.Merge(context.Background(), "feature-a", "", false)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if res.SourceBranch != "boxt/feature-a" || res.TargetBranch != current {
+		t.Fatalf("result = %#v", res)
+	}
+	if res.OldHead == res.NewHead || res.AlreadyCurrent {
+		t.Fatalf("expected new HEAD: %#v", res)
+	}
+	if got := runGit(t, repo, "rev-parse", "HEAD"); got != wantHead {
+		t.Fatalf("target HEAD = %s, want %s", got, wantHead)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "feature.txt")); err != nil {
+		t.Fatalf("feature not merged: %v", err)
+	}
+	if _, err := os.Stat(ws.HostPath); err != nil {
+		t.Fatal("merge removed the workspace without --remove")
+	}
+}
+
+func TestMergeAlreadyUpToDate(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	if _, err := m.Create(context.Background(), "feature-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	before := runGit(t, repo, "rev-parse", "HEAD")
+	res, err := m.Merge(context.Background(), "feature-a", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.AlreadyCurrent || res.OldHead != res.NewHead {
+		t.Fatalf("result = %#v", res)
+	}
+	if got := runGit(t, repo, "rev-parse", "HEAD"); got != before {
+		t.Fatalf("HEAD changed: %s -> %s", before, got)
+	}
+}
+
+func TestMergeDivergedRefusedWithoutChanges(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "ws.txt"), []byte("ws\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "add", "ws.txt")
+	runGit(t, ws.HostPath, "commit", "-q", "-m", "workspace change")
+	if err := os.WriteFile(filepath.Join(repo, "root.txt"), []byte("root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "root.txt")
+	runGit(t, repo, "commit", "-q", "-m", "root change")
+	before := runGit(t, repo, "rev-parse", "HEAD")
+
+	_, err = m.Merge(context.Background(), "feature-a", "", false)
+	var notFF *ErrNotFastForward
+	if !errors.As(err, &notFF) {
+		t.Fatalf("expected ErrNotFastForward, got %v", err)
+	}
+	if got := runGit(t, repo, "rev-parse", "HEAD"); got != before {
+		t.Fatalf("diverged merge changed HEAD: %s -> %s", before, got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "ws.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("diverged merge changed the working tree")
+	}
+}
+
+func TestMergeDirtySourceRefused(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "untracked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := runGit(t, repo, "rev-parse", "HEAD")
+	_, err = m.Merge(context.Background(), "feature-a", "", false)
+	var dirty *ErrMergeDirty
+	if !errors.As(err, &dirty) || !strings.Contains(dirty.Role, "workspace") {
+		t.Fatalf("expected workspace ErrMergeDirty, got %v", err)
+	}
+	if got := runGit(t, repo, "rev-parse", "HEAD"); got != before {
+		t.Fatal("dirty merge changed HEAD")
+	}
+}
+
+func TestMergeDirtyProjectRootRefused(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "add", "feature.txt")
+	runGit(t, ws.HostPath, "commit", "-q", "-m", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "root-untracked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.Merge(context.Background(), "feature-a", "", false)
+	var dirty *ErrMergeDirty
+	if !errors.As(err, &dirty) || dirty.Role != "project root" {
+		t.Fatalf("expected project-root ErrMergeDirty, got %v", err)
+	}
+}
+
+func TestMergeDetachedTargetRefused(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "add", "feature.txt")
+	runGit(t, ws.HostPath, "commit", "-q", "-m", "feature")
+	runGit(t, repo, "checkout", "--detach", "-q")
+	_, err = m.Merge(context.Background(), "feature-a", "", false)
+	var detached *ErrMergeDetached
+	if !errors.As(err, &detached) || detached.Role != "project root" {
+		t.Fatalf("expected detached target, got %v", err)
+	}
+}
+
+func TestMergeDetachedSourceRefused(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "checkout", "--detach", "-q")
+	_, err = m.Merge(context.Background(), "feature-a", "", false)
+	var detached *ErrMergeDetached
+	if !errors.As(err, &detached) {
+		t.Fatalf("expected detached source, got %v", err)
+	}
+}
+
+func TestMergeIntoTarget(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "add", "feature.txt")
+	runGit(t, ws.HostPath, "commit", "-q", "-m", "feature")
+	current := runGit(t, repo, "symbolic-ref", "--short", "HEAD")
+	if _, err := m.Merge(context.Background(), "feature-a", current, false); err != nil {
+		t.Fatalf("merge into current: %v", err)
+	}
+	_, err = m.Merge(context.Background(), "feature-a", "other", false)
+	var targetErr *ErrMergeTarget
+	if !errors.As(err, &targetErr) {
+		t.Fatalf("expected ErrMergeTarget, got %v", err)
+	}
+}
+
+func TestMergeRemoveKeepsBranch(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ws.HostPath, "add", "feature.txt")
+	runGit(t, ws.HostPath, "commit", "-q", "-m", "feature")
+	res, err := m.Merge(context.Background(), "feature-a", "", true)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if !res.Removed || res.RemoveErr != nil {
+		t.Fatalf("result = %#v", res)
+	}
+	if _, err := os.Stat(ws.HostPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("workspace not removed")
+	}
+	runGit(t, repo, "show-ref", "--verify", "refs/heads/boxt/feature-a")
+}
+
+func TestMergeRemoveBlockedByIgnoredFiles(t *testing.T) {
+	repo := initRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "ignore")
+	m := newManager(t, repo)
+	ws, err := m.Create(context.Background(), "feature-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.HostPath, ".env"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Merge(context.Background(), "feature-a", "", true)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if res.Removed || res.RemoveErr == nil {
+		t.Fatalf("expected removal to be blocked: %#v", res)
+	}
+	if _, err := os.Stat(ws.HostPath); err != nil {
+		t.Fatal("blocked removal deleted the workspace")
+	}
+}
+
+func TestMergeDefaultWorkspaceRefused(t *testing.T) {
+	repo := initRepo(t)
+	m := newManager(t, repo)
+	_, err := m.Merge(context.Background(), "default", "", false)
+	var def *ErrDefaultWorkspace
+	if !errors.As(err, &def) {
+		t.Fatalf("expected ErrDefaultWorkspace, got %v", err)
+	}
+}
+
 func TestParseWorktrees(t *testing.T) {
 	out := "worktree /repo\x00HEAD abc\x00branch refs/heads/master\x00\x00" +
 		"worktree /ws/one\x00HEAD def\x00branch refs/heads/boxt/one\x00locked busy\x00\x00" +
