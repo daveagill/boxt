@@ -199,7 +199,7 @@ func (a *App) workspacePath(ctx context.Context, name string) error {
 func newWorkspaceRunCmd(app *App) *cobra.Command {
 	var noStart bool
 	cmd := &cobra.Command{
-		Use:   "run name [target] [-- command [args...]]",
+		Use:   "run name [target] [-- args...] [-- command [args...]]",
 		Short: "Run a target or arbitrary command in a workspace",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -242,10 +242,10 @@ func workspaceRunArgs(args []string, dash int) (name string, rest []string, rest
 	rest = args[1:]
 	restDash = -1
 	if dash >= 0 {
-		if dash != 1 {
-			return "", nil, -1, errors.New("unexpected arguments before `--`; use `boxt workspace run <name> <target>` or `boxt workspace run <name> -- <command>`")
+		if dash == 0 {
+			return "", nil, -1, errors.New("workspace name is required before `--`")
 		}
-		restDash = 0
+		restDash = dash - 1
 	}
 	return name, rest, restDash, nil
 }

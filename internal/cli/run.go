@@ -22,13 +22,14 @@ type invocation struct {
 func newRunCmd(app *App) *cobra.Command {
 	var noStart bool
 	cmd := &cobra.Command{
-		Use:   "run [target] [-- command [args...]]",
+		Use:   "run [target] [-- args...] [-- command [args...]]",
 		Short: "Run the default target, a named target, or an arbitrary command",
 		Long: `Run a configured target in the project VM.
 
-  boxt run                 run the configured default target
-  boxt run test            run a named target
-  boxt run -- npm test     run an arbitrary command`,
+  boxt run                    run the configured default target
+  boxt run test               run a named target
+  boxt run test -- --watch    append arguments to a named target
+  boxt run -- npm test        run an arbitrary command`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return app.run(cmd.Context(), args, cmd.ArgsLenAtDash(), noStart)
@@ -121,11 +122,10 @@ func (a *App) shellInvocation(p *project.Project) invocation {
 }
 
 // resolveRun implements target resolution. It never falls back from an unknown
-// target name to an executable on PATH.
+// target name to an executable on PATH. Arguments after `--` either form an
+// arbitrary command (when there is no target before the dash) or are appended
+// to the configured target command.
 func resolveRun(cfg *config.Config, args []string, dash int, terminal bool, commandPrefix string) (invocation, error) {
-	if dash > 0 {
-		return invocation{}, errors.New("unexpected arguments before `--`; use `boxt run <target>` or `boxt run -- <command>`")
-	}
 	if dash == 0 {
 		if len(args) == 0 || args[0] == "" {
 			return invocation{}, errors.New("no command specified after `--`")
@@ -133,6 +133,29 @@ func resolveRun(cfg *config.Config, args []string, dash int, terminal bool, comm
 		return invocation{
 			Command:     append([]string(nil), args...),
 			Interactive: terminal,
+		}, nil
+	}
+	if dash > 0 {
+		if dash != 1 {
+			prefix := commandPrefix
+			if prefix == "" {
+				prefix = "boxt run"
+			}
+			return invocation{}, fmt.Errorf(
+				"unexpected arguments before `--`: %v\n\nUse `%s <target> -- <args...>` to pass arguments to a target, or `%s -- <command> [args...]` for an arbitrary command",
+				args[:dash], prefix, prefix,
+			)
+		}
+		name := args[0]
+		target, ok := cfg.ResolveTarget(name)
+		if !ok {
+			return invocation{}, &unknownTargetError{Name: name, CommandPrefix: commandPrefix}
+		}
+		command := append([]string(nil), target.Command...)
+		command = append(command, args[dash:]...)
+		return invocation{
+			Command:     command,
+			Interactive: target.Interactive,
 		}, nil
 	}
 	switch len(args) {
@@ -166,8 +189,8 @@ func resolveRun(cfg *config.Config, args []string, dash int, terminal bool, comm
 			prefix = "boxt run"
 		}
 		return invocation{}, fmt.Errorf(
-			"unexpected arguments: %v\n\nUse `%s <target>` for a named target, or `%s -- <command> [args...]` for an arbitrary command",
-			args[1:], prefix, prefix,
+			"unexpected arguments: %v\n\nUse `%s <target>` for a named target, `%s <target> -- <args...>` to pass arguments, or `%s -- <command> [args...]` for an arbitrary command",
+			args[1:], prefix, prefix, prefix,
 		)
 	}
 }

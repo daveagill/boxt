@@ -202,6 +202,57 @@ func TestRunUnexpectedArguments(t *testing.T) {
 	}
 }
 
+func TestRunTargetArgumentPassthrough(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "run", "test", "--", "--watch", "-x"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !endsWith(f.shellCommand(t).Args, []string{"--", "npm", "test", "--watch", "-x"}) {
+		t.Fatalf("unexpected args: %#v", f.shellCommand(t).Args)
+	}
+}
+
+func TestRootTargetArgumentPassthrough(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "test", "--", "--watch"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !endsWith(f.shellCommand(t).Args, []string{"--", "npm", "test", "--watch"}) {
+		t.Fatalf("unexpected args: %#v", f.shellCommand(t).Args)
+	}
+}
+
+func TestRunTargetArgumentPassthroughNoStart(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Stopped"
+	if code := f.run(t, "run", "--no-start", "test", "--", "--watch"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if f.countCommands("start") != 0 || f.countCommands("shell") != 0 {
+		t.Fatalf("--no-start invoked Lima: %#v", f.runner.commands)
+	}
+}
+
+func TestRunUnknownTargetWithArguments(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "run", "codex", "--", "--help"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(f.errOut.String(), "unknown run target: codex") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+	if f.countCommands("shell") != 0 {
+		t.Fatal("unknown target reached the guest")
+	}
+}
+
 func TestRunEmptyAfterDash(t *testing.T) {
 	f := newLifecycleFixture(t)
 	f.writeConfig(t, runConfig)
@@ -517,9 +568,13 @@ func TestResolveRun(t *testing.T) {
 		{"interactive target", []string{"python"}, -1, false, []string{"python"}, true, ""},
 		{"arbitrary terminal", []string{"python", "x.py"}, 0, true, []string{"python", "x.py"}, true, ""},
 		{"arbitrary non-terminal", []string{"python", "x.py"}, 0, false, []string{"python", "x.py"}, false, ""},
+		{"target arguments", []string{"dev", "--watch", "-x"}, 1, false, []string{"npm", "run", "dev", "--watch", "-x"}, false, ""},
+		{"interactive target arguments", []string{"python", "-i"}, 1, true, []string{"python", "-i"}, true, ""},
 		{"unknown", []string{"nope"}, -1, false, nil, false, "unknown run target"},
+		{"unknown with arguments", []string{"nope", "--help"}, 1, false, nil, false, "unknown run target"},
 		{"too many", []string{"dev", "x"}, -1, false, nil, false, "unexpected arguments"},
-		{"dash with target", []string{"dev", "x"}, 1, false, nil, false, "before `--`"},
+		{"too many before dash", []string{"dev", "x", "--watch"}, 2, false, nil, false, "before `--`"},
+		{"no target after dash", []string{"--watch"}, 0, false, []string{"--watch"}, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -544,12 +599,12 @@ func TestResolveRunCopiesCommand(t *testing.T) {
 	cfg := &config.Config{Run: config.RunConfig{Targets: map[string]config.RunTarget{
 		"dev": {Command: []string{"one"}},
 	}}}
-	inv, err := resolveRun(cfg, []string{"dev"}, -1, false, "boxt run")
+	inv, err := resolveRun(cfg, []string{"dev", "two"}, 1, false, "boxt run")
 	if err != nil {
 		t.Fatal(err)
 	}
 	inv.Command[0] = "mutated"
-	if cfg.Run.Targets["dev"].Command[0] != "one" {
+	if cfg.Run.Targets["dev"].Command[0] != "one" || len(cfg.Run.Targets["dev"].Command) != 1 {
 		t.Fatal("resolved command aliases the configuration slice")
 	}
 }

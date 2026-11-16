@@ -411,12 +411,18 @@ mise installation is accepted.
 boxt                    # run the default target (same as `boxt run`)
 boxt run                # run the default target
 boxt run test           # run a named target
+boxt run test -- --watch  # append arguments to a named target
 boxt run -- npm test    # run an arbitrary command
 boxt shell              # interactive shell in the default workspace
 boxt run opencode       # run a configured interactive agent
+boxt run claude -- -p "review this change"
 boxt workspace run agent-1 opencode
+boxt workspace run agent-1 test -- --watch
 ```
 
+Arguments after `--` are appended to the target command as separate argv entries;
+boxt never assembles a shell string. `boxt run -- <command>` remains the arbitrary
+command form, and more than one positional argument before `--` is an error.
 Targets are explicit; boxt never treats an installed executable as a run target.
 An unknown target produces guidance:
 

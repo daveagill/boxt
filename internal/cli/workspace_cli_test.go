@@ -363,6 +363,26 @@ func TestWorkspaceRunNoStart(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRunTargetArguments(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create failed")
+	}
+	if code := f.run(t, "workspace", "run", "feature-a", "test", "--", "--watch"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	guest := "/workspaces/" + f.project.ID + "/feature-a"
+	c := f.shellCommand(t)
+	if !containsArg(c.Args, guest) {
+		t.Fatalf("missing guest workdir %q: %#v", guest, c.Args)
+	}
+	if !endsWith(c.Args, []string{"--", "npm", "test", "--watch"}) {
+		t.Fatalf("unexpected args: %#v", c.Args)
+	}
+}
+
 func TestWorkspaceRunUnexpectedBeforeDash(t *testing.T) {
 	f := newWorkspaceFixture(t)
 	f.writeConfig(t, runConfig)
@@ -370,7 +390,7 @@ func TestWorkspaceRunUnexpectedBeforeDash(t *testing.T) {
 	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
 		t.Fatalf("create failed")
 	}
-	if code := f.run(t, "workspace", "run", "feature-a", "dev", "--", "x"); code != 1 {
+	if code := f.run(t, "workspace", "run", "feature-a", "dev", "extra", "--", "x"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if !strings.Contains(f.errOut.String(), "before `--`") {

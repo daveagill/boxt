@@ -107,6 +107,11 @@ examples/node-app/        complete runnable example
 ### Execution
 
 - All run/shell/workspace execution goes through `internal/executor`.
+- `boxt run <target> -- <args...>` and
+  `boxt workspace run <ws> <target> -- <args...>` append args to the configured
+  target command as separate argv entries. `boxt run -- <command...>` remains the
+  arbitrary-command form. More than one positional argument before `--` is an
+  error, and the configured command slice must never be mutated.
 - Pass argv separately; never build a shell string from user input and never use
   `cd ... && ...` as the execution mechanism. Use
   `limactl shell --workdir <guest-path>`.
