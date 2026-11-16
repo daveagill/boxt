@@ -156,10 +156,14 @@ examples/node-app/        complete runnable example
 - Worktrees live outside the project checkout under the project-scoped data dir.
 - Default branch: `boxt/<workspace>`; `--branch` may override. Recreating a
   workspace reuses an existing branch if present.
-- `boxt workspace create <name> --run <target>` resolves and validates the target
-  before creating anything, then creates the worktree and runs the target through
-  the shared executor in the new guest path. Preserve the guest exit status, leave
-  the workspace on failure, and honor `--no-start`/`vm.auto_start`.
+- `boxt workspace create <name> [--run[=<target>]]` resolves and validates the
+  target before creating anything, then creates the worktree and runs the target
+  through the shared executor in the new guest path. Bare `--run` uses
+  `run.default`; `--run=` means no run target. The bare form is detected with a
+  @-prefixed pflag sentinel that cannot be a valid target name; a space-separated
+  `--run <target>` remains accepted when it follows the workspace name. Preserve
+  the guest exit status, leave the workspace on failure, and honor
+  `--no-start`/`vm.auto_start`.
 - `boxt workspace merge` is fast-forward only. Require clean source and project
   root, reject detached HEAD and diverged histories before changing refs, and
   never force/squash/create merge commits. `--remove` uses the safe worktree

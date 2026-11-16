@@ -39,6 +39,11 @@ func (a *App) workspaceManager(p *project.Project) (*workspace.Manager, projectP
 	return workspace.New(p.Root, p.ID, paths.WorkspacesDir, a.Git), paths, nil
 }
 
+// bareRunTargetSentinel is the pflag NoOptDefVal for --run. Target names must
+// match ^[A-Za-z0-9][A-Za-z0-9._-]*$, so an @-prefixed value can never collide
+// with a real target name.
+const bareRunTargetSentinel = "@run.default"
+
 func newWorkspaceCreateCmd(app *App) *cobra.Command {
 	var branch string
 	var runTarget string
@@ -47,16 +52,48 @@ func newWorkspaceCreateCmd(app *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create name",
 		Short: "Create a named workspace backed by a Git worktree",
-		Args:  cobra.ExactArgs(1),
+		Long: `Create a named workspace backed by a Git worktree.
+
+Use --run without a value to run run.default, --run <target> to run an explicit
+configured target, and --run= to skip running.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if runTarget == bareRunTargetSentinel && len(args) == 2 {
+				return nil
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.workspaceCreate(cmd.Context(), args[0], branch, runTarget, seed, noStart)
+			name, target := workspaceCreateRunTarget(args, runTarget)
+			return app.workspaceCreate(cmd.Context(), name, branch, target, seed, noStart)
 		},
 	}
 	cmd.Flags().StringVar(&branch, "branch", "", "branch to create or check out (default: boxt/<name>)")
-	cmd.Flags().StringVar(&runTarget, "run", "", "run a configured target in the new workspace")
+	cmd.Flags().StringVar(&runTarget, "run", "", "run a configured target in the new workspace (bare --run uses run.default)")
+	cmd.Flags().Lookup("run").NoOptDefVal = bareRunTargetSentinel
 	cmd.Flags().BoolVar(&seed, "seed", false, "copy ignored files from the default workspace")
 	cmd.Flags().BoolVar(&noStart, "no-start", false, "do not create or start the VM automatically for --run")
+	// pflag renders the optional-value sentinel in flag usage; hide the internal
+	// sentinel from help while keeping bare --run parsing.
+	help := cmd.HelpFunc()
+	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
+		run := c.Flags().Lookup("run")
+		sentinel := run.NoOptDefVal
+		run.NoOptDefVal = ""
+		defer func() { run.NoOptDefVal = sentinel }()
+		help(c, args)
+	})
 	return cmd
+}
+
+// workspaceCreateRunTarget normalizes the optional --run value. pflag does not
+// consume a space-separated token after an optional-value flag, so a second
+// positional argument (after the workspace name) is treated as the explicit
+// target for backwards compatibility with `--run <target>`.
+func workspaceCreateRunTarget(args []string, runTarget string) (name, target string) {
+	if runTarget == bareRunTargetSentinel && len(args) == 2 {
+		return args[0], args[1]
+	}
+	return args[0], runTarget
 }
 
 func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget string, seed, noStart bool) error {
@@ -67,13 +104,20 @@ func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget strin
 	if err != nil {
 		return err
 	}
+	runRequested := runTarget != ""
+	runName := runTarget
 	var inv invocation
-	if runTarget != "" {
-		target, ok := p.Config.ResolveTarget(runTarget)
-		if !ok {
-			return &unknownTargetError{Name: runTarget, CommandPrefix: "boxt workspace create " + name + " --run"}
+	if runRequested {
+		prefix := "boxt workspace create " + name + " --run"
+		if runTarget == bareRunTargetSentinel {
+			inv, err = resolveRun(p.Config, nil, -1, false, prefix)
+			runName = p.Config.Run.Default
+		} else {
+			inv, err = resolveRun(p.Config, []string{runTarget}, -1, false, prefix)
 		}
-		inv = targetInvocation(target)
+		if err != nil {
+			return err
+		}
 	}
 	mgr, _, err := a.workspaceManager(p)
 	if err != nil {
@@ -105,8 +149,8 @@ func (a *App) workspaceCreate(ctx context.Context, name, branch, runTarget strin
 		}
 		return fmt.Errorf("workspace create aborted by pre-hook: %w", err)
 	}
-	if runTarget != "" {
-		fmt.Fprintf(a.Out, "Running target %s in workspace %s...\n", runTarget, ws.Name)
+	if runRequested {
+		fmt.Fprintf(a.Out, "Running target %s in workspace %s...\n", runName, ws.Name)
 		if err := a.execute(ctx, p, ws.Name, ws.GuestPath, inv, allowStart); err != nil {
 			return err
 		}

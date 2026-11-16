@@ -398,6 +398,13 @@ func TestWorkspaceRunUnexpectedBeforeDash(t *testing.T) {
 	}
 }
 
+const runConfigNoDefault = `version: 1
+run:
+  targets:
+    test:
+      command: ["npm", "test"]
+`
+
 func TestWorkspaceCreateRun(t *testing.T) {
 	f := newWorkspaceFixture(t)
 	f.writeConfig(t, runConfig)
@@ -415,6 +422,86 @@ func TestWorkspaceCreateRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.workspaceHostRoot(), "agent-1")); err != nil {
 		t.Fatalf("workspace missing: %v", err)
+	}
+}
+
+func TestWorkspaceCreateRunBareUsesDefault(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "agent-1", "--run"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	guest := "/workspaces/" + f.project.ID + "/agent-1"
+	c := f.shellCommand(t)
+	if !containsArg(c.Args, guest) {
+		t.Fatalf("missing guest workdir %q: %#v", guest, c.Args)
+	}
+	if !endsWith(c.Args, []string{"--", "npm", "run", "dev"}) {
+		t.Fatalf("unexpected args: %#v", c.Args)
+	}
+	if !strings.Contains(f.out.String(), "Running target dev in workspace agent-1") {
+		t.Fatalf("default target not reported:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceCreateRunBareNoDefaultWritesNothing(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfigNoDefault)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "agent-1", "--run"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	for _, want := range []string{"no default run target configured", "Set run.default", "boxt workspace create agent-1 --run <target>"} {
+		if !strings.Contains(f.errOut.String(), want) {
+			t.Fatalf("error missing %q:\n%s", want, f.errOut.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.workspaceHostRoot(), "agent-1")); !os.IsNotExist(err) {
+		t.Fatal("missing default target created a workspace")
+	}
+	if len(f.runner.commands) != 0 {
+		t.Fatalf("missing default target invoked Lima: %#v", f.runner.commands)
+	}
+}
+
+func TestWorkspaceCreateRunExplicitEquals(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "agent-1", "--run=test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !endsWith(f.shellCommand(t).Args, []string{"--", "npm", "test"}) {
+		t.Fatalf("unexpected args: %#v", f.shellCommand(t).Args)
+	}
+}
+
+func TestWorkspaceCreateRunEmptyValueSkipsRun(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	f.writeConfig(t, runConfig)
+	f.runner.status = "Running"
+	if code := f.run(t, "workspace", "create", "agent-1", "--run="); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(f.workspaceHostRoot(), "agent-1")); err != nil {
+		t.Fatalf("workspace missing: %v", err)
+	}
+	if f.countCommands("shell") != 0 || f.countCommands("start") != 0 {
+		t.Fatalf("--run= invoked Lima: %#v", f.runner.commands)
+	}
+	if strings.Contains(f.out.String(), "Running target") {
+		t.Fatalf("--run= ran a target:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceCreateHelpMentionsBareRunDefault(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "--help"); code != 0 {
+		t.Fatalf("help exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "run.default") || !strings.Contains(f.out.String(), "bare --run") {
+		t.Fatalf("help does not document bare --run:\n%s", f.out.String())
 	}
 }
 
