@@ -174,6 +174,10 @@ examples/node-app/        complete runnable example
 
 ### Safety and UX
 
+- `boxt doctor` diagnoses host prerequisites and project configuration. It may
+  create the project-scoped data directory, but it never installs host
+  dependencies, edits configuration, or creates/starts the VM. Exit 0 for
+  OK/WARN, exit 1 when any check fails.
 - `boxt destroy` deletes only the VM. Project files, config and worktrees remain.
   Confirmation is interactive (`yes`) or `--yes`.
 - Do not silently expose services beyond loopback. `auto` forwarding is loopback

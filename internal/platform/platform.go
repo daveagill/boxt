@@ -200,6 +200,11 @@ func WSLPathWarning(path string) string {
 	return wslPathWarning(path, IsWSL())
 }
 
+// WSLPathWarningFor is the injectable form of WSLPathWarning.
+func WSLPathWarningFor(path string, wsl bool) string {
+	return wslPathWarning(path, wsl)
+}
+
 func wslPathWarning(path string, wsl bool) string {
 	if !wsl {
 		return ""

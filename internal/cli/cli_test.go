@@ -331,12 +331,35 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
+func TestDoctorCommandMissingDependencies(t *testing.T) {
+	app, out, errOut := testApp(t, t.TempDir())
+	app.LookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	if code := Run(context.Background(), app, []string{"doctor"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	for _, want := range []string{"FAIL", "git", "limactl", "qemu", "doctor found problems"} {
+		if !strings.Contains(out.String()+errOut.String(), want) {
+			t.Fatalf("doctor output missing %q:\n%s\n%s", want, out.String(), errOut.String())
+		}
+	}
+}
+
+func TestDoctorHelp(t *testing.T) {
+	app, out, _ := testApp(t, t.TempDir())
+	if code := Run(context.Background(), app, []string{"doctor", "--help"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "never starts or creates") {
+		t.Fatalf("unexpected help:\n%s", out.String())
+	}
+}
+
 func TestHelp(t *testing.T) {
 	app, out, _ := testApp(t, t.TempDir())
 	if code := Run(context.Background(), app, []string{"--help"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	for _, want := range []string{"init", "version", "persistent Linux"} {
+	for _, want := range []string{"init", "doctor", "version", "persistent Linux"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q:\n%s", want, out.String())
 		}

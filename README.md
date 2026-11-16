@@ -13,22 +13,25 @@ mkdir myapp
 cd myapp
 git init
 
+boxt doctor
 boxt init --preset opencode
 boxt run opencode
 ```
 
-The first run creates, starts and provisions the VM automatically; `boxt up`
-does the same explicitly. The project root is the default workspace; no extra
-workspace setup is required. To run another agent in parallel in its own
-checkout:
+`boxt doctor` checks that your host has the required tools and configuration; it
+never installs anything or starts a VM. The first run creates, starts and
+provisions the VM automatically; `boxt up` does the same explicitly. The project
+root is the default workspace; no extra workspace setup is required. To run
+another agent in parallel in its own checkout:
 
 ```bash
 boxt workspace create agent-2
 boxt workspace run agent-2 opencode
 ```
 
-See [Presets](#presets), [Workspaces](#workspaces), [Running commands](#running-commands)
-and the complete [example](#complete-example).
+See [Getting started](#getting-started), [Presets](#presets),
+[Workspaces](#workspaces), [Running commands](#running-commands) and the
+complete [example](#complete-example).
 
 ## Supported hosts
 
@@ -51,23 +54,76 @@ the installed QEMU and virtualization stack. The automated test suite
 cross-compiles for all release targets and exercises host-path logic; real VM
 runs must be performed on the supported host platforms.
 
-## Prerequisites
+## Getting started
 
-- [Lima](https://lima-vm.io/docs/installation/) 2.0 or newer with working
-  virtualization (Apple Virtualization on macOS, QEMU/KVM on Linux)
-- Git 2.42+ (orphan worktrees are used for repositories without commits)
-- Go 1.24+ only when building from source
+`boxt doctor` reports `OK`, `WARN` or `FAIL` for each prerequisite and prints the
+exact command or setting to fix failures. It exits non-zero when anything fails.
+It never installs host software, edits project configuration, or starts the VM.
 
-boxt checks for Lima and prints platform-specific installation guidance. It does
-not install host dependencies without consent. Linux hosts need the QEMU packages
-for their architecture and, for practical performance, `/dev/kvm` access:
+```text
+OK    host: macos/arm64
+OK    git: 2.55.0
+OK    limactl: 2.3.0
+OK    virtualization: Apple Virtualization (vz) is available
+OK    data: /Users/you/Library/Application Support/boxt
+```
 
-- Ubuntu/Debian: the `qemu-system-*` package for your architecture plus
-  `qemu-utils` (for `qemu-img`)
-- Fedora: the `qemu-system-*` package for your architecture plus `qemu-img`
+### Install prerequisites
 
-For WSL2, install the **Linux** `limactl` release and QEMU packages inside the WSL
-distro. Enable nested virtualization in `%UserProfile%\.wslconfig` for KVM:
+Install Lima 2.0 or newer and Git 2.42 or newer. boxt does not bundle Lima or
+QEMU and does not install host dependencies automatically.
+
+**macOS Apple Silicon**
+
+```bash
+brew install lima git
+limactl --version
+```
+
+The default Lima `vz` driver uses Apple Virtualization, so QEMU is not required.
+
+**Ubuntu/Debian**
+
+Install QEMU for your CPU architecture and `qemu-img`, then install Lima from the
+[Lima installation guide](https://lima-vm.io/docs/installation/):
+
+```bash
+# x86_64
+sudo apt-get update
+sudo apt-get install qemu-system-x86 qemu-utils git
+# aarch64
+sudo apt-get update
+sudo apt-get install qemu-system-arm qemu-utils git
+```
+
+Verify `/dev/kvm` exists and is usable by your user. Add yourself to the `kvm`
+group, then log out and back in (or start a new login session):
+
+```bash
+ls -l /dev/kvm
+sudo usermod -aG kvm "$USER"
+```
+
+Without KVM Lima uses slow software emulation (TCG), so `boxt doctor` reports a
+warning rather than failing.
+
+**Fedora**
+
+```bash
+# x86_64
+sudo dnf install qemu-system-x86 qemu-img git
+# aarch64
+sudo dnf install qemu-system-arm qemu-img git
+```
+
+Install Lima from the [Lima installation guide](https://lima-vm.io/docs/installation/)
+and verify `/dev/kvm` and your user's `kvm` group membership as above.
+
+**Windows 11 + WSL2 (experimental)**
+
+Run the Linux steps inside WSL. Install the **Linux** `limactl` release and the
+QEMU packages inside the WSL distribution, not on Windows. Enable nested
+virtualization in `%UserProfile%\.wslconfig`:
 
 ```ini
 [wsl2]
@@ -75,10 +131,11 @@ nestedVirtualization=true
 memory=12GB
 ```
 
-Then restart WSL and verify `/dev/kvm` exists. Keep the project under
-`~/projects/...`, not `/mnt/c/...`.
+Restart WSL, verify `/dev/kvm` exists inside WSL, and keep the project under
+`~/projects/...` on the WSL ext4 filesystem, not `/mnt/c/...`. `boxt doctor`
+warns when a project is on a Windows-mounted path.
 
-## Installation
+### Install boxt
 
 Release archives are published as
 `boxt_<version>_<os>_<arch>.tar.gz` together with `checksums.txt`:
@@ -92,7 +149,7 @@ tar xzf "boxt_${version}_linux_arm64.tar.gz"
 install -m 0755 boxt ~/.local/bin/boxt
 ```
 
-From source:
+From source (Go 1.24+):
 
 ```bash
 git clone https://github.com/daveagill/boxt
@@ -103,14 +160,16 @@ make build
 
 `make install PREFIX=~/.local` installs to `$(PREFIX)/bin/boxt`.
 
-## Initialize a project
+### Create the first project
 
 ```bash
 mkdir myapp
 cd myapp
 git init
 
-boxt init
+boxt doctor
+boxt init --preset opencode
+boxt run opencode
 ```
 
 This creates `.boxt/config.yaml` and never overwrites existing configuration.
@@ -461,6 +520,10 @@ on WSL `localhostForwarding`, firewall and VPN configuration.
   sudo is available only for provisioning and system administration.
 
 ## Troubleshooting
+
+Start with `boxt doctor`. It reports missing tools, unsupported hosts, KVM/QEMU
+problems, data-directory permissions and project configuration errors with
+platform-specific commands. It does not install anything.
 
 Use `-v` for debug logs, including external commands (arguments only, no
 environment variables):

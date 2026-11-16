@@ -145,6 +145,7 @@ func NewRoot(app *App) *cobra.Command {
 	}
 
 	root.AddCommand(newInitCmd(app))
+	root.AddCommand(newDoctorCmd(app))
 	root.AddCommand(newUpCmd(app))
 	root.AddCommand(newDownCmd(app))
 	root.AddCommand(newStatusCmd(app))
