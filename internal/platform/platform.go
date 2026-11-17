@@ -33,11 +33,12 @@ func IsWSL() bool {
 	return strings.Contains(version, "microsoft") || strings.Contains(version, "wsl")
 }
 
-// Supported reports whether boxt supports this host OS/architecture.
+// Supported reports whether boxt supports this host OS/architecture. Windows
+// is supported through the Linux build inside WSL2, not as a native host.
 func Supported(goos, goarch string) bool {
 	switch goos {
 	case "darwin":
-		return goarch == "arm64"
+		return goarch == "amd64" || goarch == "arm64"
 	case "linux":
 		return goarch == "amd64" || goarch == "arm64"
 	default:
@@ -52,7 +53,7 @@ type UnsupportedError struct {
 }
 
 func (e *UnsupportedError) Error() string {
-	return fmt.Sprintf("unsupported host platform %s/%s; boxt supports macOS arm64 and Linux amd64/arm64", e.OS, e.Arch)
+	return fmt.Sprintf("unsupported host platform %s/%s; boxt supports macOS, Linux and Windows 11 via WSL2", e.OS, e.Arch)
 }
 
 // CheckSupported verifies the running host.

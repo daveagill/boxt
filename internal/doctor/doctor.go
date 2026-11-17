@@ -190,7 +190,7 @@ func hostCheck(deps Deps) Check {
 		Status:  FAIL,
 		Label:   "host",
 		Message: label + " is not supported",
-		Hint:    "boxt supports macOS arm64 and Linux amd64/arm64. Native Windows and macOS Intel are not supported.",
+		Hint:    "boxt supports macOS, Linux and Windows 11 via WSL2.",
 	}
 }
 

@@ -49,7 +49,7 @@ func TestSupported(t *testing.T) {
 		want         bool
 	}{
 		{"darwin", "arm64", true},
-		{"darwin", "amd64", false},
+		{"darwin", "amd64", true},
 		{"linux", "amd64", true},
 		{"linux", "arm64", true},
 		{"linux", "386", false},

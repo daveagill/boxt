@@ -38,5 +38,6 @@ jobs:
       - name: Cross compile release targets
         run: |
           GOOS=darwin GOARCH=arm64 go build ./cmd/boxt
+          GOOS=darwin GOARCH=amd64 go build ./cmd/boxt
           GOOS=linux GOARCH=amd64 go build ./cmd/boxt
           GOOS=linux GOARCH=arm64 go build ./cmd/boxt
