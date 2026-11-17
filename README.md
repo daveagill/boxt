@@ -21,9 +21,6 @@ boxt run python
 
 - [Usage guide](#usage-guide)
 - [Install](#install)
-  - [Platform setup](#platform-setup)
-  - [Install boxt](#install-boxt)
-  - [Upgrading boxt](#upgrading-boxt)
 - [Command overview](#command-overview)
 - [Running commands](#running-commands)
 - [Workspaces](#workspaces)
@@ -34,6 +31,7 @@ boxt run python
 - [VM lifecycle](#vm-lifecycle)
 - [Configuration](#configuration)
   - [Changing VM settings](#changing-vm-settings)
+  - [Additional mounts](#additional-mounts)
   - [Seed rules](#seed-rules)
 - [Lifecycle hooks](#lifecycle-hooks)
 - [Networking and port forwarding](#networking-and-port-forwarding)
@@ -109,97 +107,20 @@ dev server, tests and an agent target.
 
 ## Install
 
-boxt needs [Lima](https://lima-vm.io/) 2.0 or newer and Git 2.42 or newer on the
-host; it does not install host dependencies. The guest is Ubuntu 24.04 LTS.
+boxt runs on macOS, Linux and Windows 11 via WSL2.
 
-| Host | Architecture | Status |
-|---|---|---|
-| Linux | amd64, aarch64 | supported |
-| macOS | Apple Silicon (arm64) | supported |
-| Windows 11 + WSL2 (Ubuntu) | amd64, aarch64 | experimental |
+**Install with Homebrew** (recommended)
 
-Native Windows and macOS Intel are not supported. WSL2 support runs the Linux
-build inside WSL; Linux aarch64 support depends on the installed QEMU and
-virtualization stack.
-
-Each project VM takes host RAM roughly equal to its configured guest memory,
-plus a few GB of disk for Lima's image and the guest disk. Defaults are 4 vCPUs
-and 8 GiB per project; see the [configuration reference](#configuration).
-
-If a prerequisite is missing, `boxt doctor` reports what failed and how to fix
-it.
-
-### Platform setup
-
-**macOS Apple Silicon**
+Homebrew installs boxt along with its dependencies (Lima and QEMU):
 
 ```bash
-brew install lima git
-limactl --version
+brew install daveagill/tap/boxt
 ```
 
-The default Lima `vz` driver uses Apple Virtualization, so QEMU is not required.
+**Install manually**
 
-**Ubuntu/Debian**
-
-Install QEMU and `qemu-img` for your CPU architecture, then install Lima from the
-[Lima installation guide](https://lima-vm.io/docs/installation/):
-
-```bash
-# x86_64
-sudo apt-get update
-sudo apt-get install qemu-system-x86 qemu-utils git
-
-# aarch64
-sudo apt-get update
-sudo apt-get install qemu-system-arm qemu-utils git
-```
-
-**Fedora**
-
-```bash
-# x86_64
-sudo dnf install qemu-system-x86 qemu-img git
-
-# aarch64
-sudo dnf install qemu-system-arm qemu-img git
-```
-
-Install Lima from the same [installation guide](https://lima-vm.io/docs/installation/).
-
-**KVM on Linux**
-
-Verify `/dev/kvm` exists and is usable by your user, and add yourself to the
-`kvm` group (then start a new login session):
-
-```bash
-ls -l /dev/kvm
-sudo usermod -aG kvm "$USER"
-```
-
-Without KVM, Lima falls back to slow QEMU software emulation (TCG). `boxt doctor`
-reports a warning rather than failing.
-
-**Windows 11 + WSL2 (experimental)**
-
-Run the Linux steps inside WSL. Install the **Linux** `limactl` release and the
-QEMU packages inside the WSL distribution, not on Windows. Enable nested
-virtualization in `%UserProfile%\.wslconfig`:
-
-```ini
-[wsl2]
-nestedVirtualization=true
-memory=12GB
-```
-
-Restart WSL, verify `/dev/kvm` exists inside WSL, and keep projects and boxt data
-on the WSL ext4 filesystem, for example `~/projects/myapp`, not `/mnt/c/...`.
-`boxt doctor` warns when a project is on a Windows-mounted path.
-
-### Install boxt
-
-Release archives are published as `boxt_<version>_<os>_<arch>.tar.gz` together
-with `checksums.txt`:
+a) Download a boxt release archive:
+`boxt_<version>_<os>_<arch>.tar.gz` together with `checksums.txt`:
 
 ```bash
 version=0.1.0     # replace with the latest release tag
@@ -213,7 +134,11 @@ tar xzf "boxt_${version}_${os}_${arch}.tar.gz"
 install -m 0755 boxt ~/.local/bin/boxt
 ```
 
-Or, build from source (Go 1.24+):
+b) Follow [platform setup](docs/platform-setup.md) to install dependencies (Lima and QEMU/KVM packages).
+
+c) Run `boxt doctor` to confirm that all dependency prequisites are satisfied.
+
+**Build and install from source** (Requires Go 1.24+):
 
 ```bash
 git clone https://github.com/daveagill/boxt
@@ -224,12 +149,6 @@ make build
 
 `make install PREFIX=~/.local` installs to `$(PREFIX)/bin/boxt`.
 
-### Upgrading boxt
-
-Install the new binary over the old one. The existing VM is reused, and guest
-tools, caches and credentials persist. A newly pinned guest image only takes
-effect when the VM is recreated with `boxt destroy` followed by `boxt up`.
-
 ## Command overview
 
 | Command | Purpose |
@@ -239,6 +158,7 @@ effect when the VM is recreated with `boxt destroy` followed by `boxt up`.
 | `boxt status` | show the project, VM, mounts, tools and workspaces. See [VM lifecycle](#vm-lifecycle). |
 | `boxt down` | stop the VM, preserving all guest state. See [VM lifecycle](#vm-lifecycle). |
 | `boxt destroy` | delete the VM and its guest state. See [VM lifecycle](#vm-lifecycle). |
+| `boxt recreate` | destroy and recreate the VM from the current configuration. See [VM lifecycle](#vm-lifecycle). |
 | `boxt` | run the default target (same as `boxt run`). See [Running commands](#running-commands). |
 | `boxt run [target]` | run the default or a named target. See [Running commands](#running-commands). |
 | `boxt run -- <command>` | run an arbitrary command. See [Running commands](#running-commands). |
@@ -246,6 +166,7 @@ effect when the VM is recreated with `boxt destroy` followed by `boxt up`.
 | `boxt workspace create\|list\|path\|run\|shell` | create and use Git worktrees. See [Workspaces](#workspaces). |
 | `boxt workspace merge\|rebase\|remove` | land, replay or discard a workspace. See [Workspaces](#workspaces). |
 | `boxt tool add\|remove\|list` | declare tools; `boxt provision` reconciles them. See [Tools](#tools). |
+| `boxt mount add\|remove\|list` | declare additional host paths mounted into the VM. See [Additional mounts](#additional-mounts). |
 | `boxt hooks status\|trust\|clear` | inspect and approve lifecycle hooks. See [Lifecycle hooks](#lifecycle-hooks). |
 | `boxt doctor` | diagnose host prerequisites and project configuration. See [Troubleshooting](docs/troubleshooting.md). |
 
@@ -409,6 +330,7 @@ boxt up        # create/start the VM and reconcile tools; idempotent
 boxt status    # project, VM, mounts, tools and workspaces
 boxt down      # stop the VM, preserving all guest state
 boxt destroy   # delete the VM and guest state (confirms unless --yes)
+boxt recreate  # destroy and create a fresh VM from current config
 ```
 
 `boxt up` creates the VM on first use, starts it, ensures system packages and
@@ -440,6 +362,10 @@ Workspaces:
 worktrees are kept. It needs a terminal and the literal confirmation `yes`, or
 `--yes` for scripts.
 
+`boxt recreate` is `destroy` followed by `up`: it applies changed creation-time
+settings and provisions a fresh VM. All guest state is lost, so it uses the same
+confirmation rules as `destroy` (`--yes` for scripts).
+
 A stopped or missing VM is created or started automatically before `run`, `shell`,
 `workspace run` and `workspace shell`. Disable that per command with `--no-start`
 or for the project with `vm.auto_start: false`. `boxt up` performs setup explicitly.
@@ -457,12 +383,16 @@ version: 1
 
 vm:
   image: ubuntu-24.04
-  # guest CPUs and memory; applied when the VM is created, so change them by
-  # running `boxt destroy` and `boxt up`
+  # guest CPUs and memory; applied when the VM is created, so change them with
+  # `boxt recreate`
   cpus: 4
   memory: 8GiB
   port_forwarding: auto   # auto: forward guest loopback; explicit: only `ports`
   auto_start: true
+  mounts:                 # additional host paths, applied at VM creation
+    - host: /Users/you/shared/data
+      guest: /mnt/data
+      writable: true
 
 workspace:
   # ff: merge only when the target branch can fast-forward (default)
@@ -501,11 +431,46 @@ configuration.
 
 ### Changing VM settings
 
-`vm.cpus`, `vm.memory`, `vm.ports`, `vm.port_forwarding`, the project root and the
-data directory are fixed at VM creation; if they change, boxt reports the mismatch
-and asks for `boxt destroy` then `boxt up`. Tools, run targets, `vm.auto_start` and
-`workspace.merge` need no recreation, and upgrading boxt does not invalidate an
-existing VM.
+`vm.cpus`, `vm.memory`, `vm.ports`, `vm.port_forwarding`, `vm.mounts`, the
+project root and the data directory are fixed at VM creation; if they change,
+boxt reports the mismatch and asks for `boxt recreate`. Tools, run targets,
+`vm.auto_start` and `workspace.merge` need no recreation, and upgrading boxt does
+not invalidate an existing VM.
+
+### Additional mounts
+
+`vm.mounts` mounts extra host paths into every workspace of the project. Mounts
+are applied when the VM is created:
+
+```yaml
+vm:
+  mounts:
+    - host: /Users/you/shared/data
+      guest: /mnt/data
+      writable: true
+    - host: /Users/you/shared/cache
+      guest: /mnt/cache
+      writable: false
+```
+
+Every mount must set `writable` to `true` or `false`. `boxt mount add` defaults
+to read-write and accepts `--read-only` when declaring a mount.
+Configured host paths must be absolute (the `boxt mount add` command expands `~`
+and relative paths) and are never the home directory, an ancestor of it, the
+filesystem root or a Docker socket. Guest paths must be absolute and may not
+shadow `/workspace`, `/workspaces`, the guest home or system directories, and
+may not overlap another mount. The `boxt mount` commands edit the configuration
+atomically:
+
+```bash
+boxt mount add ~/shared/data --guest /mnt/data
+boxt mount add ~/shared/cache --guest /mnt/cache --read-only
+boxt mount list
+boxt mount remove /mnt/cache        # or remove by host path
+```
+
+Adding or removing a mount on an existing VM requires `boxt recreate`. `boxt
+doctor` reports a missing mount source before you try to start the VM.
 
 ### Seed rules
 
@@ -623,10 +588,13 @@ are an execution-time convention and need no VM recreation.
   the Lima network.
 - The project and workspace directories are writable host mounts, so guest code
   can modify project files.
+- Additional `vm.mounts` paths are opt-in and must set `writable`. Prefer
+  `writable: false` for host data that guest code or agents should not modify.
 - In `auto` forwarding mode, guest loopback services are exposed on host loopback.
   Use `explicit` when you want a deny-by-default policy.
 - Host SSH keys, credentials, the home directory and the Docker socket are never
-  copied or mounted automatically.
+  copied or mounted automatically. boxt rejects `vm.mounts` entries for the home
+  directory, its ancestors, the filesystem root and Docker sockets.
 - Ordinary development commands run as the non-root `boxt` user. Passwordless
   sudo is available only for provisioning and system administration.
 - Lifecycle hooks require explicit approval via `boxt hooks trust`, and changing
@@ -655,8 +623,8 @@ with platform-specific fixes. For WSL2, VM, port and workspace problems, see
 
 ## Filesystem layout
 
-Only the project root and its project-scoped workspace root are mounted into the
-guest.
+The project root and its project-scoped workspace root are always mounted into
+the guest. Additional host paths are mounted only when listed under `vm.mounts`.
 
 ```text
 Host
@@ -684,6 +652,7 @@ Guest
 /workspaces/<project-id>/             project-scoped named workspaces
 ├── feature-a/
 └── feature-b/
+/mnt/data/                            optional vm.mounts entry
 ```
 
 `<data-dir>` is `~/Library/Application Support/boxt` on macOS and
@@ -705,6 +674,11 @@ make integration    # requires Lima + virtualization; opt-in
 make build          # build ./bin/boxt
 make snapshot       # local release archives (goreleaser)
 ```
+
+Releases publish archives, checksums and the `daveagill/homebrew-tap` formula.
+Set `HOMEBREW_TAP_GITHUB_TOKEN` to a token with write access to the tap
+repository before running `make release`; the formula depends on `lima` and
+`git`, so Homebrew installs them automatically.
 
 Unit tests use fakes for external processes. Git worktree tests use temporary real
 repositories. VM integration tests are gated by `BOXT_INTEGRATION=1` and skip

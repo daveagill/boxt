@@ -58,8 +58,16 @@ docs/                     deeper reference (troubleshooting)
   `${XDG_DATA_HOME:-~/.local/share}/boxt`.
 - Never mount the host home directory, an ancestor of home, `/`, or the Docker
   socket. The workspace data directory must be outside the project root.
-- Only the project root and its project-scoped workspace root are mounted.
-  Mounts are writable direct host mounts, not file synchronization.
+- The project root and its project-scoped workspace root are always mounted.
+  Additional opt-in mounts come only from `vm.mounts`; they are direct host
+  mounts (never file synchronization). `writable` is mandatory in configuration
+  (`true` or `false`); `boxt mount add` defaults to read-write unless
+  `--read-only` is given. `boxt mount add|remove|list` edits that config.
+- Custom mount host paths must be absolute, must exist before creation/start,
+  and must not be `/`, the home directory, an ancestor of home or a Docker
+  socket. Guest paths must be absolute and must not shadow `/workspace`,
+  `/workspaces`, `/home`, or system directories, nor overlap another mount.
+  Mounts are part of the VM creation fingerprint.
 
 ### Configuration
 
@@ -72,10 +80,11 @@ docs/                     deeper reference (troubleshooting)
     loopback. This is deliberate, requested for Vite/agent workflows.
   - `explicit`: forward only `vm.ports`; all other ports are ignored.
 - Explicit host ports are checked for conflicts. Guest port 22 is reserved.
-- VM-level settings (CPU, memory, ports, forwarding mode, mounts/data dir) are
-  applied at creation. boxt stores a fingerprint and refuses to run against a VM
-  whose configuration differs; instruct the user to `boxt destroy` then
-  `boxt up`. Do not silently update the fingerprint.
+- VM-level settings (CPU, memory, ports, forwarding mode, `vm.mounts`, the
+  project root and data dir) are applied at creation. boxt stores a fingerprint
+  and refuses to run against a VM whose configuration differs; instruct the user
+  to `boxt recreate` (or `boxt destroy` then `boxt up`). Do not silently update
+  the fingerprint.
 - `vm.auto_start` controls whether run/shell commands may create/start/provision
   the VM automatically (default true). `--no-start` overrides it for one command.
   It is an execution policy, not part of the VM creation fingerprint.
@@ -102,9 +111,11 @@ docs/                     deeper reference (troubleshooting)
   one. `--no-start` disables it for one command; `vm.auto_start: false` disables
   it for the project. `boxt up` always performs explicit setup.
 - Do not assume a guest IP address.
-- WSL2 is experimental host support: run the Linux boxt/limactl binaries inside
+- Windows is supported through WSL2: run the Linux boxt/limactl binaries inside
   WSL, keep projects/data on ext4 (not `/mnt/c`), and use nested virtualization
   for KVM. `platform.IsWSL` gates WSL-specific hints and path warnings.
+- `platform.Supported` covers macOS and Linux on amd64/arm64; do not introduce
+  separate support tiers or architecture-specific messaging.
 
 ### Execution
 
@@ -271,6 +282,9 @@ docs/                     deeper reference (troubleshooting)
   OK/WARN, exit 1 when any check fails.
 - `boxt destroy` deletes only the VM. Project files, config and worktrees remain.
   Confirmation is interactive (`yes`) or `--yes`.
+- `boxt recreate` performs the same delete, then runs the normal `up` flow with
+  the same confirmation requirement as `destroy`. It is the preferred fix for
+  creation-time configuration drift.
 - Do not silently expose services beyond loopback. `auto` forwarding is loopback
   only; `host_ip: 0.0.0.0` is an explicit LAN exposure.
 - Provide actionable errors with hints. Keep normal output quiet; `-v` enables
@@ -300,12 +314,13 @@ go test -p 1 -tags=integration ./...
   hosts. Without KVM, QEMU TCG is slow and larger guests can be OOM-killed.
 - `BOXT_INTEGRATION_LIMA_ROOT` defaults to `/tmp`; point it at a filesystem with
   room for Lima images/disks.
-- Integration coverage: VM lifecycle/persistence, project and workspace mounts,
-  guest user, PTY shell and exit status, tool install/persistence, dynamic port
-  forwarding, workspace host/guest visibility, destroy preservation.
+- Integration coverage: VM lifecycle/persistence, project, workspace and custom
+  mounts (read-only and read-write), guest user, PTY shell and exit status, tool
+  install/persistence, dynamic port forwarding, workspace host/guest visibility,
+  destroy preservation.
 - Real validation has passed on Linux/aarch64 with Lima 2.3.0 and QEMU TCG.
-  macOS, Fedora and WSL2 VM runs remain host-specific; WSL2 is experimental and
-  should be checked on a real Windows 11 host.
+  macOS, Fedora and WSL2 VM runs remain host-specific and should be checked on
+  real hosts.
 - Validate generated Lima YAML after config changes:
 
 ```bash
@@ -317,7 +332,8 @@ BOXT_LIMACTL=$(command -v limactl) go test ./internal/lima -run LimactlValidate
 1. Keep CLI thin; external tools go through `internal/command`.
 2. Add or update unit tests for every behavior change.
 3. Run `make check`, `go test -race ./...`, and cross-build
-   `GOOS=darwin GOARCH=arm64` / `GOOS=linux GOARCH=amd64`.
+   `GOOS=darwin GOARCH=arm64`, `GOOS=darwin GOARCH=amd64`,
+   `GOOS=linux GOARCH=amd64` and `GOOS=linux GOARCH=arm64`.
 4. Run gated integration tests for VM, executor, toolchain or workspace changes.
 5. Update `README.md` for user-visible behavior and `AGENTS.md` for invariants.
 6. Check that destroy/removal paths still never delete project/user data.

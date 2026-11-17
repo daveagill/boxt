@@ -19,14 +19,13 @@ environment variables instead.
 
 **Lima, QEMU or KVM missing**
 
-See [Platform setup](../README.md#platform-setup) for per-OS packages and KVM
-notes.
+See [Platform setup](platform-setup.md) for per-OS packages and KVM notes.
 
 **WSL2: VM is extremely slow**
 
 Check that `/dev/kvm` exists inside WSL and that guest memory fits the WSL limit;
 without KVM boxt falls back to slow software emulation (TCG). See
-[Platform setup](../README.md#platform-setup).
+[Platform setup](platform-setup.md).
 
 **WSL2: project permissions or Git worktrees behave strangely**
 
@@ -46,7 +45,19 @@ Run `boxt init` at the project root. Commands need a directory tree containing
 **VM exists but is broken**
 
 `boxt status` reports broken or uninitialized VMs. If `boxt up` cannot recover it,
-run `boxt destroy --yes` then `boxt up`. Project files and worktrees are preserved.
+run `boxt recreate --yes`. Project files and worktrees are preserved.
+
+**Additional mount fails**
+
+`boxt doctor` and `boxt up` report a missing or inaccessible `vm.mounts` host
+path before starting the VM. Fix the host path or remove the entry with
+`boxt mount remove <guest-path-or-host-path>`. Guest paths may not shadow
+`/workspace`, `/workspaces`, the guest home or system directories.
+
+**Changed mounts but the VM still uses the old ones**
+
+Mounts are applied at VM creation. Run `boxt recreate`; boxt refuses to run
+against a VM created with a different mount configuration.
 
 **Port conflict**
 
