@@ -173,7 +173,7 @@ func TestRunUnknownTarget(t *testing.T) {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	msg := f.errOut.String()
-	for _, want := range []string{"unknown run target: codex", "Define it under run.targets", "boxt run -- codex"} {
+	for _, want := range []string{"unknown run target: codex", "boxt target add codex", "boxt run -- codex"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("error missing %q:\n%s", want, msg)
 		}

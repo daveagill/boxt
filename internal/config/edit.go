@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -25,6 +26,24 @@ type ErrTargetExists struct {
 
 func (e *ErrTargetExists) Error() string {
 	return fmt.Sprintf("run target %q already exists with a different command", e.Name)
+}
+
+// ErrTargetNotFound is returned when removing or selecting an undeclared target.
+type ErrTargetNotFound struct {
+	Name string
+}
+
+func (e *ErrTargetNotFound) Error() string {
+	return fmt.Sprintf("run target %q is not configured", e.Name)
+}
+
+// ErrPortNotFound is returned when removing an undeclared guest port.
+type ErrPortNotFound struct {
+	Guest int
+}
+
+func (e *ErrPortNotFound) Error() string {
+	return fmt.Sprintf("guest port %d is not forwarded", e.Guest)
 }
 
 // ErrMountNotFound is returned when removing an undeclared mount.
@@ -83,29 +102,109 @@ func AddToolTarget(path, name, version, targetName string, target RunTarget) err
 		if err != nil {
 			return err
 		}
-		targets, err := getOrCreateMapping(run, "targets")
+		return addTargetToRun(run, targetName, target)
+	})
+}
+
+// AddTarget adds or updates a run target. An existing target with a different
+// definition is an error; an identical one is a no-op. When setDefault is true
+// run.default is pointed at the target in the same atomic write.
+func AddTarget(path, name string, target RunTarget, setDefault bool) error {
+	if !ValidTargetName(name) {
+		return fmt.Errorf("invalid target name %q", name)
+	}
+	return mutateConfig(path, func(root *yaml.Node) error {
+		run, err := getOrCreateMapping(root, "run")
 		if err != nil {
 			return err
 		}
-		key, value := findMapEntry(targets, targetName)
-		if key != nil {
-			var existing RunTarget
-			if err := value.Decode(&existing); err != nil {
-				return fmt.Errorf("parse run target %q: %w", targetName, err)
-			}
-			if !reflect.DeepEqual(existing, target) {
-				return &ErrTargetExists{Name: targetName}
-			}
-			return nil
-		}
-		node, err := runTargetNode(target)
-		if err != nil {
+		if err := addTargetToRun(run, name, target); err != nil {
 			return err
 		}
-		targets.Content = append(targets.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: targetName},
-			node,
-		)
+		if setDefault {
+			return setScalarValue(root, []string{"run", "default"}, name, "!!str")
+		}
+		return nil
+	})
+}
+
+func addTargetToRun(run *yaml.Node, name string, target RunTarget) error {
+	targets, err := getOrCreateMapping(run, "targets")
+	if err != nil {
+		return err
+	}
+	key, value := findMapEntry(targets, name)
+	if key != nil {
+		var existing RunTarget
+		if err := value.Decode(&existing); err != nil {
+			return fmt.Errorf("parse run target %q: %w", name, err)
+		}
+		if !reflect.DeepEqual(existing, target) {
+			return &ErrTargetExists{Name: name}
+		}
+		return nil
+	}
+	node, err := runTargetNode(target)
+	if err != nil {
+		return err
+	}
+	targets.Content = append(targets.Content, stringNode(name), node)
+	return nil
+}
+
+// RemoveTarget removes one run target. When it was the configured default,
+// run.default is cleared in the same atomic write and the boolean is true.
+func RemoveTarget(path, name string) (wasDefault bool, err error) {
+	if !ValidTargetName(name) {
+		return false, fmt.Errorf("invalid target name %q", name)
+	}
+	err = mutateConfig(path, func(root *yaml.Node) error {
+		runKey, run := findMapEntry(root, "run")
+		if runKey == nil || run.Kind != yaml.MappingNode {
+			return &ErrTargetNotFound{Name: name}
+		}
+		targetsKey, targets := findMapEntry(run, "targets")
+		if targetsKey == nil || targets.Kind != yaml.MappingNode {
+			return &ErrTargetNotFound{Name: name}
+		}
+		if key, _ := findMapEntry(targets, name); key == nil {
+			return &ErrTargetNotFound{Name: name}
+		}
+		removeKeyFrom(targets, name)
+		if defKey, defValue := findMapEntry(run, "default"); defKey != nil && defValue.Value == name {
+			removeKeyFrom(run, "default")
+			wasDefault = true
+		}
+		return nil
+	})
+	return wasDefault, err
+}
+
+// SetDefaultTarget points run.default at an existing target.
+func SetDefaultTarget(path, name string) error {
+	if !ValidTargetName(name) {
+		return fmt.Errorf("invalid target name %q", name)
+	}
+	return mutateConfig(path, func(root *yaml.Node) error {
+		runKey, run := findMapEntry(root, "run")
+		if runKey == nil || run.Kind != yaml.MappingNode {
+			return &ErrTargetNotFound{Name: name}
+		}
+		targetsKey, targets := findMapEntry(run, "targets")
+		if targetsKey == nil || targets.Kind != yaml.MappingNode {
+			return &ErrTargetNotFound{Name: name}
+		}
+		if key, _ := findMapEntry(targets, name); key == nil {
+			return &ErrTargetNotFound{Name: name}
+		}
+		return setScalarValue(root, []string{"run", "default"}, name, "!!str")
+	})
+}
+
+// UnsetDefaultTarget clears run.default.
+func UnsetDefaultTarget(path string) error {
+	return mutateConfig(path, func(root *yaml.Node) error {
+		removeKeyPath(root, []string{"run", "default"})
 		return nil
 	})
 }
@@ -376,16 +475,94 @@ func setTool(tools *yaml.Node, name, version string) {
 }
 
 func runTargetNode(target RunTarget) (*yaml.Node, error) {
-	data, err := yaml.Marshal(&target)
+	return valueNode(target, "run target")
+}
+
+// AddPort appends one explicit guest-to-host port mapping.
+func AddPort(path string, port PortForward) error {
+	if port.HostIP == "" {
+		port.HostIP = "127.0.0.1"
+	}
+	if err := validatePortForward(port); err != nil {
+		return err
+	}
+	return mutateConfig(path, func(root *yaml.Node) error {
+		vm, err := getOrCreateMapping(root, "vm")
+		if err != nil {
+			return err
+		}
+		key, ports := findMapEntry(vm, "ports")
+		if key == nil {
+			ports = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			vm.Content = append(vm.Content, stringNode("ports"), ports)
+		} else if ports.Kind != yaml.SequenceNode {
+			return errors.New("configuration field vm.ports must be a list")
+		}
+		node, err := valueNode(port, "port forward")
+		if err != nil {
+			return err
+		}
+		ports.Content = append(ports.Content, node)
+		return nil
+	})
+}
+
+// RemovePortByGuest removes the mapping for one guest port.
+func RemovePortByGuest(path string, guest int) error {
+	return mutateConfig(path, func(root *yaml.Node) error {
+		vmKey, vm := findMapEntry(root, "vm")
+		if vmKey == nil || vm.Kind != yaml.MappingNode {
+			return &ErrPortNotFound{Guest: guest}
+		}
+		portsKey, ports := findMapEntry(vm, "ports")
+		if portsKey == nil || ports.Kind != yaml.SequenceNode {
+			return &ErrPortNotFound{Guest: guest}
+		}
+		for i, item := range ports.Content {
+			var existing PortForward
+			if err := item.Decode(&existing); err != nil {
+				continue
+			}
+			if existing.Guest != guest {
+				continue
+			}
+			ports.Content = append(ports.Content[:i], ports.Content[i+1:]...)
+			if len(ports.Content) == 0 {
+				removeKeyFrom(vm, "ports")
+			}
+			return nil
+		}
+		return &ErrPortNotFound{Guest: guest}
+	})
+}
+
+func validatePortForward(port PortForward) error {
+	if port.Guest < 1 || port.Guest > 65535 {
+		return fmt.Errorf("guest port %d must be between 1 and 65535", port.Guest)
+	}
+	if port.Guest == 22 {
+		return errors.New("guest port 22 is reserved for Lima SSH")
+	}
+	if port.Host < 1 || port.Host > 65535 {
+		return fmt.Errorf("host port %d must be between 1 and 65535", port.Host)
+	}
+	if net.ParseIP(port.HostIP) == nil {
+		return fmt.Errorf("invalid host IP %q", port.HostIP)
+	}
+	return nil
+}
+
+func valueNode(value any, label string) (*yaml.Node, error) {
+	data, err := yaml.Marshal(value)
 	if err != nil {
-		return nil, fmt.Errorf("encode run target: %w", err)
+		return nil, fmt.Errorf("encode %s: %w", label, err)
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("encode run target: %w", err)
+		return nil, fmt.Errorf("encode %s: %w", label, err)
 	}
 	if len(doc.Content) == 0 {
-		return nil, errors.New("encode run target: empty document")
+		return nil, fmt.Errorf("encode %s: empty document", label)
 	}
 	return doc.Content[0], nil
 }

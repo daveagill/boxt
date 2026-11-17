@@ -262,8 +262,8 @@ func (e *unknownTargetError) Hint() string {
 		prefix = "boxt run"
 	}
 	return fmt.Sprintf(
-		"Define it under run.targets in .boxt/config.yaml,\nor use `%s -- %s` to execute the command directly.",
-		prefix, e.Name,
+		"Add it with `boxt target add %[1]s -- <command>` or edit run.targets in .boxt/config.yaml,\nor use `%[2]s -- %[1]s` to execute the command directly.",
+		e.Name, prefix,
 	)
 }
 
