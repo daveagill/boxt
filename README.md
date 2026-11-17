@@ -19,8 +19,8 @@ boxt run python
 
 ## Contents
 
-- [Usage guide](#usage-guide)
 - [Install](#install)
+- [Usage guide](#usage-guide)
 - [Command overview](#command-overview)
 - [Running commands](#running-commands)
 - [Workspaces](#workspaces)
@@ -41,69 +41,6 @@ boxt run python
 - [Troubleshooting](docs/troubleshooting.md)
 - [Filesystem layout](#filesystem-layout)
 - [Development](#development)
-
-## Usage guide
-
-1. [Install boxt](#install)
-2. Navigate to an existing Git repository or create a new one:
-
-   ```bash
-   mkdir myapp && cd myapp && git init
-   ```
-
-3. Initialize boxt:
-
-   ```bash
-   boxt init --preset opencode
-   ```
-
-   `boxt init` writes `.boxt/config.yaml`, which you should commit to Git.
-
-   Combine [Presets](#presets) to scaffold common environments, such as Node.js
-   and Claude Code:
-
-   ```bash
-   boxt init --preset node --preset claude --default-target claude
-   ```
-
-4. Run your favourite coding agent in a sandbox VM:
-
-   ```bash
-   boxt run opencode
-   ```
-
-   `boxt run` creates, starts and provisions the VM, then launches the agent
-   process. The project directory becomes the default workspace.
-
-   Once the VM exists, later `boxt run` commands reconnect to it. See
-   [VM lifecycle](#vm-lifecycle) for more on managing the VM.
-
-5. Create additional [Workspaces](#workspaces) to run agents in parallel on the
-   same VM:
-
-   ```bash
-   boxt workspace create feature-a --run opencode
-   ```
-
-   Each workspace is a Git worktree, so agents get their own copy of the code.
-   Once a feature is complete, merge the workspace back into the default
-   workspace:
-
-   ```bash
-   boxt workspace merge feature-a
-   ```
-
-6. Install [Tools](#tools):
-
-   ```bash
-   boxt tool add node@lts
-   ```
-
-   Tools are recorded in `.boxt/config.yaml` and provisioned into the VM, so dev
-   environments are reproducible and shareable.
-
-See [`examples/node-app`](examples/node-app) for a complete runnable project with a
-dev server, tests and an agent target.
 
 ## Install
 
@@ -148,6 +85,68 @@ make build
 ```
 
 `make install PREFIX=~/.local` installs to `$(PREFIX)/bin/boxt`.
+
+## Usage guide
+
+1. Navigate to an existing Git repository or create a new one:
+
+   ```bash
+   mkdir myapp && cd myapp && git init
+   ```
+
+2. Initialize boxt:
+
+   ```bash
+   boxt init --preset opencode
+   ```
+
+   `boxt init` writes `.boxt/config.yaml`, which you should commit to Git.
+
+   Combine [Presets](#presets) to scaffold common environments, such as Node.js
+   and Claude Code:
+
+   ```bash
+   boxt init --preset node --preset claude --default-target claude
+   ```
+
+3. Run your favourite coding agent in a sandbox VM:
+
+   ```bash
+   boxt run opencode
+   ```
+
+   `boxt run` creates, starts and provisions the VM, then launches the agent
+   process. The project directory becomes the default workspace.
+
+   Once the VM exists, later `boxt run` commands reconnect to it. See
+   [VM lifecycle](#vm-lifecycle) for more on managing the VM.
+
+4. Create additional [Workspaces](#workspaces) to run agents in parallel on the
+   same VM:
+
+   ```bash
+   boxt workspace create feature-a --run opencode
+   ```
+
+   Each workspace is a Git worktree, so agents get their own copy of the code.
+   Once a feature is complete, merge the workspace back into the default
+   workspace:
+
+   ```bash
+   boxt workspace merge feature-a
+   ```
+
+5. Install [Tools](#tools):
+
+   ```bash
+   boxt tool add node@lts
+   ```
+
+   Tools are recorded in `.boxt/config.yaml` and provisioned into the VM, so dev
+   environments are reproducible and shareable.
+
+See [`examples/node-app`](examples/node-app) for a complete runnable project with a
+dev server, tests and an agent target.
 
 ## Command overview
 
