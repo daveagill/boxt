@@ -162,8 +162,9 @@ make build
 | `boxt` | run the default target (same as `boxt run`). See [Running commands](#running-commands). |
 | `boxt run [target]` | run the default or a named target. See [Running commands](#running-commands). |
 | `boxt run -- <command>` | run an arbitrary command. See [Running commands](#running-commands). |
-| `boxt shell` | open an interactive shell in the project root. See [Running commands](#running-commands). |
-| `boxt workspace create\|list\|path\|run\|shell` | create and use Git worktrees. See [Workspaces](#workspaces). |
+| `boxt shell` | open an interactive shell in the current workspace. See [Running commands](#running-commands). |
+| `boxt workspace create\|list\|path\|run\|shell\|switch` | create and use Git worktrees. See [Workspaces](#workspaces). |
+| `boxt shell-init <shell>` | print the shell integration that powers `workspace switch`. See [Entering a workspace](#entering-a-workspace). |
 | `boxt workspace merge\|rebase\|remove` | land, replay or discard a workspace. See [Workspaces](#workspaces). |
 | `boxt tool add\|remove\|list` | declare tools; `boxt provision` reconciles them. See [Tools](#tools). |
 | `boxt mount add\|remove\|list` | declare additional host paths mounted into the VM. See [Additional mounts](#additional-mounts). |
@@ -181,12 +182,16 @@ boxt run                  # run the default target
 boxt run test             # run a named target
 boxt run test -- --watch  # append arguments to a named target
 boxt run -- npm test      # run an arbitrary command
-boxt shell                # interactive shell in the default workspace
+boxt shell                # interactive shell in the current workspace
 boxt run opencode         # run a configured interactive agent
 boxt run claude -- -p "review this change"
 boxt workspace run feature-a opencode
 boxt workspace run feature-a test -- --watch
 ```
+
+`boxt`, `boxt run` and `boxt shell` execute in the workspace whose checkout
+contains the current directory, falling back to the project root. See
+[Entering a workspace](#entering-a-workspace).
 
 Arguments after `--` are appended to the target as separate argv entries, not a
 shell string. Targets are explicit: an installed executable is not a run target,
@@ -221,6 +226,7 @@ boxt workspace create feature-a --run opencode
 boxt workspace create feature-a --seed
 boxt workspace list
 boxt workspace path feature-a
+boxt workspace switch feature-a
 boxt workspace run feature-a test
 boxt workspace shell feature-a
 boxt workspace merge feature-a
@@ -241,6 +247,54 @@ Notes:
 - The default workspace is the project root and can be addressed as `default`.
 - Named workspaces require the project root to be the Git repository root; an
   empty repository is supported using an orphan branch (Git 2.42+).
+
+### Entering a workspace
+
+`boxt`, `boxt run` and `boxt shell` execute in the workspace whose checkout
+contains the current directory, falling back to the project root. Named
+workspace checkouts live outside the project checkout, so `cd`-ing into one
+keeps your shell and the VM in sync.
+
+`boxt workspace switch <name>` changes the current shell's directory, which no
+command can do for its parent shell. It needs the small integration printed by
+`boxt shell-init`, added once to your startup file:
+
+```zsh
+# ~/.zshrc
+eval "$(boxt shell-init zsh)"
+```
+```bash
+# ~/.bashrc
+eval "$(boxt shell-init bash)"
+```
+```fish
+# ~/.config/fish/config.fish
+boxt shell-init fish | source
+```
+
+`sh`, `bash`, `zsh` and `fish` are supported. boxt only prints the integration;
+it never edits your startup files. Workspace-name completion comes from
+`boxt completion <shell>`, so `boxt workspace switch <TAB>` lists the project's
+workspaces once both are loaded.
+
+Without the integration, use the path directly:
+
+```bash
+cd "$(boxt workspace path feature-a)"   # named workspace
+cd "$(boxt workspace path default)"     # project root
+```
+
+`boxt workspace run` and `boxt workspace shell` always take an explicit name and
+therefore override the current directory. From inside a worktree that is how you
+work in the project root:
+
+```bash
+boxt workspace run default dev            # default target in the project root
+boxt workspace run default -- npm test    # arbitrary command in the project root
+boxt workspace shell default              # shell at the project root
+```
+
+`switch` is host-only: it never starts the VM and never runs lifecycle hooks.
 
 ### Seeding ignored files
 
@@ -575,7 +629,9 @@ run:
 The default workspace uses offset 0, so `dev` receives `PORT=3000`; named
 workspaces use a stable 1–999 offset derived from the project ID and name. Offset
 collisions are an error, so rename a workspace or change `port_base`. The service
-must honor the variable (Vite reads `PORT`, for example).
+must honor the variable (Vite reads `PORT`, for example). Because `boxt run` and
+`boxt shell` resolve the workspace from the current directory, running them
+inside a named workspace uses that workspace's offset automatically.
 
 In `auto` mode the guest port is reachable on the same host port; in `explicit`
 mode add a `vm.ports` mapping for each `port_base + offset` you need. Port offsets

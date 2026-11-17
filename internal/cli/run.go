@@ -13,6 +13,7 @@ import (
 	"github.com/daveagill/boxt/internal/executor"
 	"github.com/daveagill/boxt/internal/lima"
 	"github.com/daveagill/boxt/internal/project"
+	"github.com/daveagill/boxt/internal/workspace"
 )
 
 type invocation struct {
@@ -51,7 +52,32 @@ func (a *App) run(ctx context.Context, args []string, dash int, noStart bool) er
 	if err != nil {
 		return err
 	}
-	return a.execute(ctx, p, "default", lima.GuestProjectPath, inv, !noStart && p.Config.VM.AutoStartEnabled())
+	workspace, workDir, err := a.executionWorkspace(ctx, p)
+	if err != nil {
+		return err
+	}
+	return a.execute(ctx, p, workspace, workDir, inv, !noStart && p.Config.VM.AutoStartEnabled())
+}
+
+// executionWorkspace returns the workspace that run and shell execute in: the
+// managed workspace whose checkout contains the current directory, or the
+// default workspace when the current directory is elsewhere. A command cannot
+// change its parent shell's directory, so this is how `boxt run` and
+// `boxt shell` follow `cd`. It is derived per invocation and never persisted;
+// `boxt workspace run|shell <name>` remains the explicit form.
+func (a *App) executionWorkspace(ctx context.Context, p *project.Project) (string, string, error) {
+	cwd, err := a.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("determine working directory: %w", err)
+	}
+	mgr, _, err := a.workspaceManager(p)
+	if err != nil {
+		return "", "", err
+	}
+	if name, ok := mgr.NameForHostPath(cwd); ok {
+		return name, mgr.GuestPath(name), nil
+	}
+	return workspace.DefaultName, lima.GuestProjectPath, nil
 }
 
 // execute is the single CLI path that starts the VM when allowed and runs a
@@ -115,7 +141,7 @@ func newShellCmd(app *App) *cobra.Command {
 	var noStart bool
 	cmd := &cobra.Command{
 		Use:   "shell",
-		Short: "Open an interactive shell in the default workspace",
+		Short: "Open an interactive shell in the current workspace",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return app.shell(cmd.Context(), noStart)
@@ -130,7 +156,11 @@ func (a *App) shell(ctx context.Context, noStart bool) error {
 	if err != nil {
 		return err
 	}
-	return a.execute(ctx, p, "default", lima.GuestProjectPath, a.shellInvocation(p), !noStart && p.Config.VM.AutoStartEnabled())
+	workspace, workDir, err := a.executionWorkspace(ctx, p)
+	if err != nil {
+		return err
+	}
+	return a.execute(ctx, p, workspace, workDir, a.shellInvocation(p), !noStart && p.Config.VM.AutoStartEnabled())
 }
 
 // shellInvocation returns an empty command for a plain guest login shell, or

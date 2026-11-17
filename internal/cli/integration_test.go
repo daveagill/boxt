@@ -262,6 +262,32 @@ hooks:
 	if data, _ := os.ReadFile(filepath.Join(wsPath, "hook-host.txt")); string(data) != "host" {
 		t.Fatalf("host hook output = %q", data)
 	}
+
+	// run and shell follow the directory the command starts in; an explicit
+	// workspace name always wins, and `default` addresses the project root.
+	clean := func(s string) string { return strings.TrimSpace(strings.ReplaceAll(s, "\r", "")) }
+	guestWS := "/workspaces/" + p.ID + "/hooky"
+	out, code = runInPTY(t, bin, wsPath, []string{"run", "--", "pwd"}, "")
+	if code != 0 {
+		t.Fatalf("run from workspace exit %d; output:\n%s", code, out)
+	}
+	if got := clean(out); got != guestWS {
+		t.Fatalf("run from workspace pwd = %q, want %q", got, guestWS)
+	}
+	out, code = runInPTY(t, bin, wsPath, []string{"workspace", "run", "default", "--", "pwd"}, "")
+	if code != 0 {
+		t.Fatalf("default run exit %d; output:\n%s", code, out)
+	}
+	if got := clean(out); got != "/workspace" {
+		t.Fatalf("workspace run default pwd = %q, want /workspace", got)
+	}
+	out, code = runInPTY(t, bin, projectDir, []string{"workspace", "run", "hooky", "--", "pwd"}, "")
+	if code != 0 {
+		t.Fatalf("explicit workspace run exit %d; output:\n%s", code, out)
+	}
+	if got := clean(out); got != guestWS {
+		t.Fatalf("workspace run hooky pwd = %q, want %q", got, guestWS)
+	}
 }
 
 func TestIntegrationCustomMounts(t *testing.T) {

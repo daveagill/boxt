@@ -102,6 +102,37 @@ func (m *Manager) GuestPath(name string) string {
 	return filepath.ToSlash(filepath.Join(lima.WorkspacesGuestDir(m.ProjectID), name))
 }
 
+// NameForHostPath reports the named workspace whose checkout contains
+// hostPath. It never returns DefaultName: callers fall back to the default
+// workspace when the path is outside every managed worktree. The check is
+// purely host-side and never starts the VM.
+func (m *Manager) NameForHostPath(hostPath string) (string, bool) {
+	if hostPath == "" || m.HostRoot == "" {
+		return "", false
+	}
+	root, err := project.Canonical(m.HostRoot)
+	if err != nil {
+		return "", false
+	}
+	canonical, err := project.Canonical(hostPath)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, canonical)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	name := strings.Split(rel, string(filepath.Separator))[0]
+	if err := ValidateName(name); err != nil {
+		return "", false
+	}
+	info, err := os.Stat(filepath.Join(root, name))
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return name, true
+}
+
 // Default returns the implicit project-root workspace.
 func (m *Manager) Default(ctx context.Context) Workspace {
 	ws := Workspace{

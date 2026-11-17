@@ -30,6 +30,7 @@ func newWorkspaceCmd(app *App) *cobra.Command {
 	cmd.AddCommand(newWorkspaceRunCmd(app))
 	cmd.AddCommand(newWorkspaceSeedCmd(app))
 	cmd.AddCommand(newWorkspaceShellCmd(app))
+	cmd.AddCommand(newWorkspaceSwitchCmd(app))
 	return cmd
 }
 
@@ -281,7 +282,8 @@ first and then fast-forwarded. boxt never creates merge commits, squashes or
 forces refs. The workspace and project root must be clean (ignored files may
 remain). Use --remove to delete the worktree after a successful merge; the Git
 branch is always kept.`,
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: app.completeWorkspaceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rebase && noRebase {
 				return errors.New("--rebase and --no-rebase are mutually exclusive")
@@ -384,7 +386,8 @@ is not removed.
 A conflict leaves the rebase open in the workspace. Resolve the files there,
 then run --continue; to discard the rebase and restore the previous tip, run
 --abort.`,
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: app.completeWorkspaceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cont && abort {
 				return errors.New("--continue and --abort are mutually exclusive")
@@ -459,9 +462,10 @@ func shortHead(head string) string {
 func newWorkspaceRemoveCmd(app *App) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "remove name",
-		Short: "Remove a named workspace without deleting its branch",
-		Args:  cobra.ExactArgs(1),
+		Use:               "remove name",
+		Short:             "Remove a named workspace without deleting its branch",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: app.completeWorkspaceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return app.workspaceRemove(cmd.Context(), args[0], force)
 		},
@@ -521,11 +525,55 @@ func (a *App) workspaceRemove(ctx context.Context, name string, force bool) erro
 
 func newWorkspacePathCmd(app *App) *cobra.Command {
 	return &cobra.Command{
-		Use:   "path name",
-		Short: "Print the host path of a workspace",
-		Args:  cobra.ExactArgs(1),
+		Use:               "path name",
+		Short:             "Print the host path of a workspace",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: app.completeWorkspaceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return app.workspacePath(cmd.Context(), args[0])
+		},
+	}
+}
+
+// errSwitchNeedsShell explains that `workspace switch` requires the shell
+// function from `boxt shell-init`: a child process cannot change its parent
+// shell's working directory.
+type errSwitchNeedsShell struct{ name string }
+
+func (e *errSwitchNeedsShell) Error() string {
+	return fmt.Sprintf("boxt cannot change the working directory of your shell, so it cannot switch to %q", e.name)
+}
+
+func (e *errSwitchNeedsShell) Hint() string {
+	return fmt.Sprintf(`Load the shell integration from your shell startup file:
+
+  zsh:  eval "$(boxt shell-init zsh)"
+  bash: eval "$(boxt shell-init bash)"
+  fish: boxt shell-init fish | source
+
+Then run `+"`boxt workspace switch %[1]s`"+`.
+
+Without the integration, switch for one command with:
+
+  cd "$(boxt workspace path %[1]s)"`, e.name)
+}
+
+func newWorkspaceSwitchCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "switch name",
+		Short: "Change the current shell's directory to a workspace (needs shell-init)",
+		Long: `Change the current shell's directory to a workspace.
+
+A command cannot change its parent shell's working directory, so this only works
+through the function printed by ` + "`boxt shell-init`" + `:
+
+  zsh:  eval "$(boxt shell-init zsh)"
+
+Without the integration, use ` + "`cd \"$(boxt workspace path <name>)\"`" + `.`,
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: app.completeWorkspaceNames,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return &errSwitchNeedsShell{name: args[0]}
 		},
 	}
 }
@@ -554,7 +602,8 @@ func newWorkspaceSeedCmd(app *App) *cobra.Command {
 		Long: `Copy ignored files (for example .env, node_modules or caches) from the default
 workspace into a named workspace. Tracked files are never copied, existing target
 paths are never overwritten, and symlinks or special files are skipped.`,
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: app.completeWorkspaceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return app.workspaceSeed(cmd.Context(), args[0])
 		},
@@ -591,9 +640,10 @@ func (a *App) printSeedResult(result workspace.SeedResult) {
 func newWorkspaceRunCmd(app *App) *cobra.Command {
 	var noStart bool
 	cmd := &cobra.Command{
-		Use:   "run name [target] [-- args...] [-- command [args...]]",
-		Short: "Run a target or arbitrary command in a workspace",
-		Args:  cobra.MinimumNArgs(1),
+		Use:               "run name [target] [-- args...] [-- command [args...]]",
+		Short:             "Run a target or arbitrary command in a workspace",
+		Args:              cobra.MinimumNArgs(1),
+		ValidArgsFunction: app.completeWorkspaceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return app.workspaceRun(cmd.Context(), args, cmd.ArgsLenAtDash(), noStart)
 		},
@@ -645,9 +695,10 @@ func workspaceRunArgs(args []string, dash int) (name string, rest []string, rest
 func newWorkspaceShellCmd(app *App) *cobra.Command {
 	var noStart bool
 	cmd := &cobra.Command{
-		Use:   "shell name",
-		Short: "Open an interactive shell in a workspace",
-		Args:  cobra.ExactArgs(1),
+		Use:               "shell name",
+		Short:             "Open an interactive shell in a workspace",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: app.completeWorkspaceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return app.workspaceShell(cmd.Context(), args[0], noStart)
 		},
@@ -670,4 +721,32 @@ func (a *App) workspaceShell(ctx context.Context, name string, noStart bool) err
 		return err
 	}
 	return a.execute(ctx, p, ws.Name, ws.GuestPath, a.shellInvocation(p), !noStart && p.Config.VM.AutoStartEnabled())
+}
+
+// completeWorkspaceNames suggests managed workspace names, including the
+// implicit default workspace. It is host-only, never starts the VM, and stays
+// silent on errors so completion never turns into a failure.
+func (a *App) completeWorkspaceNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	directive := cobra.ShellCompDirectiveNoFileComp
+	if len(args) > 0 {
+		return nil, directive
+	}
+	p, err := a.loadProject()
+	if err != nil {
+		return nil, directive
+	}
+	mgr, _, err := a.workspaceManager(p)
+	if err != nil {
+		return nil, directive
+	}
+	list, err := mgr.List(cmd.Context())
+	if err != nil {
+		return nil, directive
+	}
+	names := make([]string, 0, 1+len(list))
+	names = append(names, workspace.DefaultName)
+	for _, ws := range list {
+		names = append(names, ws.Name)
+	}
+	return names, directive
 }

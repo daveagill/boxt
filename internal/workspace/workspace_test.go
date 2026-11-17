@@ -86,6 +86,51 @@ func TestPaths(t *testing.T) {
 	}
 }
 
+func TestNameForHostPath(t *testing.T) {
+	root := t.TempDir()
+	hostRoot := filepath.Join(root, "workspaces", "0123456789abcdef")
+	if err := os.MkdirAll(filepath.Join(hostRoot, "feature-a", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(hostRoot, "bad name"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "workspaces", "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := New(filepath.Join(root, "project"), "0123456789abcdef", hostRoot, git.New(command.ExecRunner{}))
+
+	link := filepath.Join(root, "linked-workspace")
+	if err := os.Symlink(filepath.Join(hostRoot, "feature-a"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		path string
+		want string
+		ok   bool
+	}{
+		{name: "worktree root", path: filepath.Join(hostRoot, "feature-a"), want: "feature-a", ok: true},
+		{name: "nested directory", path: filepath.Join(hostRoot, "feature-a", "sub"), want: "feature-a", ok: true},
+		{name: "through symlink", path: link, want: "feature-a", ok: true},
+		{name: "project root", path: m.ProjectRoot},
+		{name: "workspace host root", path: hostRoot},
+		{name: "sibling directory", path: filepath.Join(root, "workspaces", "other")},
+		{name: "prefix trap", path: filepath.Join(hostRoot, "feature-abc")},
+		{name: "invalid name", path: filepath.Join(hostRoot, "bad name")},
+		{name: "empty path", path: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := m.NameForHostPath(tc.path)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("NameForHostPath(%q) = %q, %v; want %q, %v", tc.path, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
 func TestCreateListRemove(t *testing.T) {
 	repo := initRepo(t)
 	m := newManager(t, repo)

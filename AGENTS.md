@@ -120,6 +120,12 @@ docs/                     deeper reference (troubleshooting)
 ### Execution
 
 - All run/shell/workspace execution goes through `internal/executor`.
+- `boxt`, `boxt run` and `boxt shell` execute in the workspace whose checkout
+  contains the current directory, falling back to the default workspace. The
+  lookup is host-side (`workspace.Manager.NameForHostPath`) and derived per
+  invocation: never stored, so it is not active-workspace selection.
+  `boxt workspace run|shell <name>` takes an explicit name and overrides it, and
+  `default` addresses the project root.
 - `boxt run <target> -- <args...>` and
   `boxt workspace run <ws> <target> -- <args...>` append args to the configured
   target command as separate argv entries. `boxt run -- <command...>` remains the
@@ -169,6 +175,13 @@ docs/                     deeper reference (troubleshooting)
 - Worktrees live outside the project checkout under the project-scoped data dir.
 - Default branch: `boxt/<workspace>`; `--branch` may override. Recreating a
   workspace reuses an existing branch if present.
+- `boxt workspace switch <name>` only works through the function printed by
+  `boxt shell-init <sh|bash|zsh|fish>`: no process can change its parent shell's
+  working directory. `boxt workspace path` is the primitive and prints exactly
+  the host path. The binary `switch` command exists to fail with an actionable
+  hint and to complete workspace names; it must never print a `cd` line on
+  stdout. The integration is host-only, never starts the VM, never runs hooks,
+  and boxt never edits shell startup files.
 - `boxt workspace create <name> [--run[=<target>]]` resolves and validates the
   target before creating anything, then creates the worktree and runs the target
   through the shared executor in the new guest path. Bare `--run` uses
