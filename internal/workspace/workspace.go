@@ -981,30 +981,21 @@ func (m *Manager) RemoveWithOptions(ctx context.Context, name string, opts Remov
 // non-ignored untracked files always block. Ignored files block unless
 // allow_remove is set and every current ignored path matches the seed rules.
 func (m *Manager) checkRemovable(ctx context.Context, name, dir string, rules config.SeedConfig) error {
-	status, err := m.Git.Output(ctx, dir, "status", "--porcelain", "--ignore-submodules=none")
-	if err != nil {
-		return fmt.Errorf("check workspace status: %w", err)
-	}
-	if hasStatusChanges(status) {
-		return &ErrDirty{Name: name}
-	}
-
-	ignored, err := m.ignoredPaths(ctx, dir)
+	inspection, err := m.inspectRemoval(ctx, dir, rules)
 	if err != nil {
 		return err
 	}
-	if len(ignored) == 0 {
+	if len(inspection.Dirty) > 0 || len(inspection.Untracked) > 0 {
+		return &ErrDirty{Name: name}
+	}
+	if len(inspection.Ignored) == 0 {
 		return nil
 	}
 	if !rules.AllowRemove {
 		return &ErrIgnoredFiles{Name: name}
 	}
-	matcher, err := newSeedMatcher(rules)
-	if err != nil {
-		return err
-	}
-	if unmatched := matcher.Unmatched(ignored); len(unmatched) > 0 {
-		return &ErrIgnoredFiles{Name: name, Paths: unmatched}
+	if len(inspection.Unmatched) > 0 {
+		return &ErrIgnoredFiles{Name: name, Paths: inspection.Unmatched}
 	}
 	return nil
 }
@@ -1022,15 +1013,6 @@ func (m *Manager) ignoredPaths(ctx context.Context, dir string) ([]string, error
 		}
 	}
 	return paths, nil
-}
-
-func hasStatusChanges(status string) bool {
-	for _, line := range strings.Split(status, "\n") {
-		if strings.TrimSpace(line) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 type rawWorktree struct {

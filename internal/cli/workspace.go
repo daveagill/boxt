@@ -360,7 +360,7 @@ func (a *App) workspaceMerge(ctx context.Context, name, into string, remove, reb
 	if !remove {
 		return nil
 	}
-	if err := a.workspaceRemove(ctx, name, false); err != nil {
+	if err := a.workspaceRemove(ctx, name, false, false); err != nil {
 		var ignored *workspace.ErrIgnoredFiles
 		var dirty *workspace.ErrDirty
 		if errors.As(err, &ignored) || errors.As(err, &dirty) {
@@ -460,21 +460,26 @@ func shortHead(head string) string {
 }
 
 func newWorkspaceRemoveCmd(app *App) *cobra.Command {
-	var force bool
+	var force, dryRun bool
 	cmd := &cobra.Command{
-		Use:               "remove name",
-		Short:             "Remove a named workspace without deleting its branch",
+		Use:   "remove name",
+		Short: "Remove a named workspace without deleting its branch",
+		Long: `Remove a named workspace without deleting the Git branch.
+
+With --dry-run, report what removal would do and exit without changing anything.
+A dry run never runs lifecycle hooks and does not require them to be trusted.`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: app.completeWorkspaceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.workspaceRemove(cmd.Context(), args[0], force)
+			return app.workspaceRemove(cmd.Context(), args[0], force, dryRun)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "discard uncommitted changes (the Git branch is still kept)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be removed without changing anything")
 	return cmd
 }
 
-func (a *App) workspaceRemove(ctx context.Context, name string, force bool) error {
+func (a *App) workspaceRemove(ctx context.Context, name string, force, dryRun bool) error {
 	p, err := a.loadProject()
 	if err != nil {
 		return err
@@ -482,6 +487,10 @@ func (a *App) workspaceRemove(ctx context.Context, name string, force bool) erro
 	mgr, _, err := a.workspaceManager(p)
 	if err != nil {
 		return err
+	}
+	opts := workspace.RemoveOptions{Force: force, Seed: p.Config.SeedRules()}
+	if dryRun {
+		return a.workspaceRemoveDryRun(ctx, p, mgr, name, opts)
 	}
 	if err := a.ensureHooksTrusted(p, config.HookWorkspaceRemove); err != nil {
 		return err
@@ -499,10 +508,7 @@ func (a *App) workspaceRemove(ctx context.Context, name string, force bool) erro
 			return fmt.Errorf("workspace remove aborted by pre-hook: %w", err)
 		}
 	}
-	removed, err := mgr.RemoveWithOptions(ctx, name, workspace.RemoveOptions{
-		Force: force,
-		Seed:  p.Config.SeedRules(),
-	})
+	removed, err := mgr.RemoveWithOptions(ctx, name, opts)
 	if err != nil {
 		return err
 	}
@@ -521,6 +527,111 @@ func (a *App) workspaceRemove(ctx context.Context, name string, force bool) erro
 		}
 	}
 	return nil
+}
+
+func (a *App) workspaceRemoveDryRun(ctx context.Context, p *project.Project, mgr *workspace.Manager, name string, opts workspace.RemoveOptions) error {
+	plan, err := mgr.PlanRemoval(ctx, name, opts)
+	if err != nil {
+		return err
+	}
+	set := p.Config.HooksFor(config.HookWorkspaceRemove)
+
+	branch := plan.Branch
+	if branch == "" {
+		branch = "(detached)"
+	}
+	fmt.Fprintf(a.Out, "Workspace:  %s\n", plan.Workspace.Name)
+	if plan.Missing {
+		fmt.Fprintf(a.Out, "Branch:     %s\n", branch)
+		fmt.Fprintln(a.Out, "Verdict:    would prune stale workspace metadata")
+		a.printDryRunHooks(set)
+		fmt.Fprintln(a.Out, "\nNothing was changed.")
+		return nil
+	}
+	fmt.Fprintf(a.Out, "Branch:     %s (kept)\n", branch)
+
+	blockers := plan.Blockers()
+	switch {
+	case plan.Locked:
+		fmt.Fprintln(a.Out, "Verdict:    cannot be removed (locked by Git)")
+	case plan.Broken:
+		fmt.Fprintln(a.Out, "Verdict:    cannot be removed (broken worktree metadata)")
+	case plan.Force:
+		fmt.Fprintln(a.Out, "Verdict:    would be removed with --force (changes would be discarded)")
+	case len(blockers) > 0:
+		fmt.Fprintln(a.Out, "Verdict:    would be refused")
+	default:
+		fmt.Fprintln(a.Out, "Verdict:    would be removed")
+	}
+
+	a.printDryRunPaths("Dirty", plan.Dirty)
+	a.printDryRunPaths("Untracked", plan.Untracked)
+	switch {
+	case plan.IgnoredTotal == 0:
+		fmt.Fprintln(a.Out, "Ignored:    none")
+	default:
+		line := fmt.Sprintf("%s would be deleted", plural(plan.IgnoredTotal, "ignored file"))
+		switch {
+		case plan.Force:
+			line += " (--force discards them)"
+		case !plan.AllowRemove:
+			line += " (seed.allow_remove is false)"
+		case len(plan.IgnoredUnmatched) > 0:
+			line += fmt.Sprintf(" (%d do not match seed rules)", len(plan.IgnoredUnmatched))
+		}
+		fmt.Fprintf(a.Out, "Ignored:    %s\n", line)
+	}
+	a.printDryRunHooks(set)
+
+	if len(blockers) > 0 {
+		fmt.Fprintln(a.Out, "\nBlocked by:")
+		for _, b := range blockers {
+			fmt.Fprintf(a.Out, "  - %s\n", b)
+		}
+		fmt.Fprintf(a.Out, "\nUse `boxt workspace remove %s --force` to discard these, or resolve them first.\n", name)
+	}
+	if len(plan.IgnoredUnmatched) > 0 {
+		fmt.Fprintln(a.Out, "\nIgnored paths that do not match seed.include/seed.exclude:")
+		printPathList(a.Out, plan.IgnoredUnmatched)
+	}
+	fmt.Fprintln(a.Out, "\nNothing was changed.")
+	return nil
+}
+
+func (a *App) printDryRunHooks(set config.HookSet) {
+	switch {
+	case len(set.Pre) == 0 && len(set.Post) == 0:
+		fmt.Fprintln(a.Out, "Hooks:      none")
+	default:
+		fmt.Fprintf(a.Out, "Hooks:      %d pre, %d post configured; not run in dry-run\n", len(set.Pre), len(set.Post))
+	}
+}
+
+func (a *App) printDryRunPaths(label string, paths []string) {
+	if len(paths) == 0 {
+		fmt.Fprintf(a.Out, "%-11s none\n", label+":")
+		return
+	}
+	fmt.Fprintf(a.Out, "%-11s %d\n", label+":", len(paths))
+	printPathList(a.Out, paths)
+}
+
+func printPathList(out io.Writer, paths []string) {
+	const max = 10
+	for i, path := range paths {
+		if i == max {
+			fmt.Fprintf(out, "  ... and %d more\n", len(paths)-max)
+			return
+		}
+		fmt.Fprintf(out, "  %s\n", path)
+	}
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func newWorkspacePathCmd(app *App) *cobra.Command {

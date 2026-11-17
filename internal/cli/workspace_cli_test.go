@@ -1245,3 +1245,78 @@ func TestWorkspaceMergeRebaseDirtyRootFailsBeforeRebase(t *testing.T) {
 		t.Fatal("workspace branch changed before the dirty root was reported")
 	}
 }
+
+func TestWorkspaceRemoveDryRun(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "feature-a"); code != 0 {
+		t.Fatalf("create exit %d: %s", code, f.errOut.String())
+	}
+	wsPath := filepath.Join(f.workspaceHostRoot(), "feature-a")
+	configPath := filepath.Join(wsPath, ".boxt", "config.yaml")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(configData, []byte("# dirty\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Reset()
+	f.errOut.Reset()
+	if code := f.run(t, "workspace", "remove", "feature-a", "--dry-run"); code != 0 {
+		t.Fatalf("dry-run exit %d: %s", code, f.errOut.String())
+	}
+	out := f.out.String()
+	for _, want := range []string{"Verdict:    would be refused", "Blocked by:", "uncommitted changes", "Nothing was changed."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(wsPath); err != nil {
+		t.Fatalf("dry-run removed the workspace: %v", err)
+	}
+	if len(f.runner.commands) != 0 {
+		t.Fatalf("dry-run invoked Lima: %#v", f.runner.commands)
+	}
+
+	f.out.Reset()
+	f.errOut.Reset()
+	if code := f.run(t, "workspace", "remove", "feature-a", "--dry-run", "--force"); code != 0 {
+		t.Fatalf("forced dry-run exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "would be removed with --force") {
+		t.Fatalf("forced dry-run output:\n%s", f.out.String())
+	}
+}
+
+func TestWorkspaceRemoveDryRunSkipsHookTrust(t *testing.T) {
+	f := newWorkspaceFixture(t)
+	if code := f.run(t, "workspace", "create", "hooked"); code != 0 {
+		t.Fatalf("create exit %d: %s", code, f.errOut.String())
+	}
+	cfgPath := filepath.Join(f.project.Root, ".boxt", "config.yaml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, []byte("\nhooks:\n  workspace_remove:\n    pre:\n      - command: [\"echo\", \"hi\"]\n")...)
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f.out.Reset()
+	f.errOut.Reset()
+	if code := f.run(t, "workspace", "remove", "hooked", "--dry-run"); code != 0 {
+		t.Fatalf("dry-run exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "1 pre, 0 post configured; not run in dry-run") {
+		t.Fatalf("hook state missing:\n%s", f.out.String())
+	}
+	f.out.Reset()
+	f.errOut.Reset()
+	if code := f.run(t, "workspace", "remove", "hooked"); code != 1 {
+		t.Fatalf("untrusted hooks should block a real removal, exit %d", code)
+	}
+	if !strings.Contains(f.errOut.String(), "not trusted") && !strings.Contains(f.errOut.String(), "trust") {
+		t.Fatalf("expected an untrusted-hooks error:\n%s", f.errOut.String())
+	}
+}
