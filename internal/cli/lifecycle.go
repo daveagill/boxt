@@ -205,7 +205,7 @@ func (e *configDriftError) Error() string {
 	return fmt.Sprintf("VM %s was created with a different configuration", e.VM)
 }
 func (e *configDriftError) Hint() string {
-	return "VM settings such as cpu, memory, ports and forwarding mode are applied only at creation.\nRun `boxt destroy --yes` and `boxt up` to apply the change."
+	return "VM settings such as cpu, memory, mounts, ports and forwarding mode are applied only at creation.\nRun `boxt recreate` (or `boxt destroy --yes` and `boxt up`) to apply the change."
 }
 
 func newDownCmd(app *App) *cobra.Command {
@@ -232,7 +232,80 @@ func warnResourceDrift(a *App, p *project.Project, inst lima.Instance) {
 	if len(changes) == 0 {
 		return
 	}
-	fmt.Fprintf(a.Err, "Warning: VM %s was created with different resources (%s).\nRun `boxt destroy` and `boxt up` to apply the change.\n", p.VMName(), strings.Join(changes, ", "))
+	fmt.Fprintf(a.Err, "Warning: VM %s was created with different resources (%s).\nRun `boxt recreate` to apply the change.\n", p.VMName(), strings.Join(changes, ", "))
+}
+
+func newRecreateCmd(app *App) *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "recreate",
+		Short: "Destroy and recreate the project VM",
+		Long:  "Delete the project VM and all guest state, then create and provision a fresh VM from the current configuration. Project files and Git workspaces are never deleted.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.recreate(cmd.Context(), yes)
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "confirm recreation without an interactive prompt")
+	return cmd
+}
+
+func (a *App) recreate(ctx context.Context, yes bool) error {
+	p, err := a.loadProject()
+	if err != nil {
+		return err
+	}
+	if err := a.requireLima(); err != nil {
+		return err
+	}
+	name := p.VMName()
+	status, err := a.Lima.Inspect(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !status.Exists {
+		fmt.Fprintf(a.Out, "VM %s does not exist; creating it.\n", name)
+		return a.up(ctx)
+	}
+	if !yes {
+		prompt := fmt.Sprintf(
+			"Recreate VM %s?\nAll guest state will be lost: installed tools, caches and logins.\nProject files and Git workspaces will be kept.\nType 'yes' to confirm: ",
+			name,
+		)
+		if a.Confirm == nil {
+			return errors.New("confirmation is unavailable; re-run with --yes")
+		}
+		ok, err := a.Confirm(prompt)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("recreate cancelled; nothing was deleted")
+		}
+	}
+	if err := a.Lima.Delete(ctx, name); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Out, "Destroyed VM %s. Recreating...\n", name)
+	if err := a.up(ctx); err != nil {
+		return &recreateError{Name: name, Err: err}
+	}
+	return nil
+}
+
+type recreateError struct {
+	Name string
+	Err  error
+}
+
+func (e *recreateError) Error() string {
+	return fmt.Sprintf("VM %s was destroyed, but recreating it failed: %v", e.Name, e.Err)
+}
+
+func (e *recreateError) Unwrap() error { return e.Err }
+
+func (e *recreateError) Hint() string {
+	return "Run `boxt up` to finish creating the VM."
 }
 
 func formatBytes(n int64) string {
@@ -416,7 +489,7 @@ func (a *App) status(ctx context.Context) error {
 	}
 	fmt.Fprintf(a.Out, "Auto-up:           %s\n", autoStart)
 	if drift {
-		fmt.Fprintf(a.Out, "Config drift:      run `boxt destroy --yes` and `boxt up` to apply changed VM settings\n")
+		fmt.Fprintf(a.Out, "Config drift:      run `boxt recreate` to apply changed VM settings\n")
 	}
 	fmt.Fprintf(a.Out, "Project mount:     %s (host %s)\n", lima.GuestProjectPath, p.Root)
 	fmt.Fprintf(a.Out, "Workspaces mount:  %s (host %s)\n", lima.WorkspacesGuestDir(p.ID), paths.WorkspacesDir)

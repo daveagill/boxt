@@ -17,13 +17,14 @@ import (
 )
 
 type fakeLimaRunner struct {
-	vmName   string
-	status   string
-	cpus     int
-	memory   int64
-	commands []command.Command
-	startErr error
-	shellErr error
+	vmName    string
+	status    string
+	cpus      int
+	memory    int64
+	commands  []command.Command
+	startErr  error
+	deleteErr error
+	shellErr  error
 }
 
 func (f *fakeLimaRunner) Run(ctx context.Context, c command.Command) error {
@@ -55,6 +56,9 @@ func (f *fakeLimaRunner) Run(ctx context.Context, c command.Command) error {
 	case "stop":
 		f.status = "Stopped"
 	case "delete":
+		if f.deleteErr != nil {
+			return f.deleteErr
+		}
 		f.status = ""
 	case "shell":
 		return f.shellErr
@@ -239,7 +243,7 @@ run:
 	if code := f.run(t, "up"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(f.errOut.String(), "different configuration") || !strings.Contains(f.errOut.String(), "boxt destroy") {
+	if !strings.Contains(f.errOut.String(), "different configuration") || !strings.Contains(f.errOut.String(), "boxt recreate") {
 		t.Fatalf("unexpected error: %s", f.errOut.String())
 	}
 	if f.startCommands() != 1 {
@@ -440,6 +444,115 @@ func TestDestroyMissingVM(t *testing.T) {
 	}
 	if !strings.Contains(f.out.String(), "does not exist") {
 		t.Fatalf("unexpected output: %s", f.out.String())
+	}
+}
+
+func TestRecreateYes(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Running"
+	f.app.Confirm = func(string) (bool, error) {
+		t.Fatal("--yes should not prompt")
+		return false, nil
+	}
+	if code := f.run(t, "recreate", "--yes"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if got := f.countCommands("delete"); got != 1 {
+		t.Fatalf("delete commands = %d", got)
+	}
+	if got := f.startCommands(); got != 1 {
+		t.Fatalf("start commands = %d", got)
+	}
+	for _, want := range []string{"Destroyed VM " + f.project.VMName(), "Recreating", "Creating VM", "Environment ready"} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, f.out.String())
+		}
+	}
+	if f.runner.status != "Running" {
+		t.Fatalf("VM status = %q", f.runner.status)
+	}
+}
+
+func TestRecreateConfirmation(t *testing.T) {
+	tests := []struct {
+		name     string
+		confirm  bool
+		wantCode int
+		wantDel  int
+	}{
+		{"confirmed", true, 0, 1},
+		{"declined", false, 1, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newLifecycleFixture(t)
+			f.runner.status = "Running"
+			var prompt string
+			f.app.Confirm = func(p string) (bool, error) {
+				prompt = p
+				return tt.confirm, nil
+			}
+			code := f.run(t, "recreate")
+			if code != tt.wantCode {
+				t.Fatalf("exit = %d, want %d", code, tt.wantCode)
+			}
+			for _, want := range []string{"Recreate VM", "guest state", "installed tools", "Type 'yes'"} {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing %q: %q", want, prompt)
+				}
+			}
+			if got := f.countCommands("delete"); got != tt.wantDel {
+				t.Fatalf("delete commands = %d, want %d", got, tt.wantDel)
+			}
+			if !tt.confirm && !strings.Contains(f.errOut.String(), "cancelled") {
+				t.Fatalf("missing cancellation error: %s", f.errOut.String())
+			}
+		})
+	}
+}
+
+func TestRecreateMissingVMCreatesVM(t *testing.T) {
+	f := newLifecycleFixture(t)
+	if code := f.run(t, "recreate", "--yes"); code != 0 {
+		t.Fatalf("exit %d: %s", code, f.errOut.String())
+	}
+	if !strings.Contains(f.out.String(), "does not exist; creating it") {
+		t.Fatalf("unexpected output:\n%s", f.out.String())
+	}
+	if got := f.countCommands("delete"); got != 0 {
+		t.Fatalf("delete commands = %d", got)
+	}
+	if got := f.startCommands(); got != 1 {
+		t.Fatalf("start commands = %d", got)
+	}
+}
+
+func TestRecreateDeleteFailureLeavesVMAlone(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Running"
+	f.runner.deleteErr = &command.Error{Name: "limactl", ExitCode: 1, Stderr: "delete failed"}
+	if code := f.run(t, "recreate", "--yes"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if got := f.startCommands(); got != 0 {
+		t.Fatalf("start commands = %d", got)
+	}
+	if !strings.Contains(f.errOut.String(), "delete failed") {
+		t.Fatalf("unexpected error: %s", f.errOut.String())
+	}
+}
+
+func TestRecreateUpFailureReportsDestroyedVM(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.runner.status = "Running"
+	f.runner.startErr = &command.Error{Name: "limactl", ExitCode: 1, Stderr: "qemu missing"}
+	if code := f.run(t, "recreate", "--yes"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	for _, want := range []string{"was destroyed, but recreating it failed", "qemu missing", "boxt up"} {
+		if !strings.Contains(f.errOut.String(), want) {
+			t.Fatalf("error missing %q:\n%s", want, f.errOut.String())
+		}
 	}
 }
 

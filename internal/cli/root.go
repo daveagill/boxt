@@ -150,6 +150,7 @@ func NewRoot(app *App) *cobra.Command {
 	root.AddCommand(newDownCmd(app))
 	root.AddCommand(newStatusCmd(app))
 	root.AddCommand(newDestroyCmd(app))
+	root.AddCommand(newRecreateCmd(app))
 	root.AddCommand(newRunCmd(app))
 	root.AddCommand(newShellCmd(app))
 	root.AddCommand(newToolCmd(app))
