@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/daveagill/boxt/internal/command"
+	"github.com/daveagill/boxt/internal/config"
 	"github.com/daveagill/boxt/internal/lima"
 	"github.com/daveagill/boxt/internal/platform"
 	"github.com/daveagill/boxt/internal/project"
@@ -485,6 +486,18 @@ func projectChecks(ctx context.Context, deps Deps, p *project.Project, dataDir s
 			Message: "the project root is the home directory or filesystem root",
 			Hint:    "Create the project in a subdirectory instead.",
 		})
+	}
+	if len(p.Config.VM.Mounts) > 0 {
+		if err := config.ValidateMountSources(p.Config.VM.Mounts); err != nil {
+			checks = append(checks, Check{
+				Status:  FAIL,
+				Label:   "mounts",
+				Message: err.Error(),
+				Hint:    "Fix or remove the vm.mounts entry in .boxt/config.yaml.",
+			})
+		} else {
+			checks = append(checks, Check{Status: OK, Label: "mounts", Message: fmt.Sprintf("%d additional mount(s) available", len(p.Config.VM.Mounts))})
+		}
 	}
 	if len(p.Config.VM.Ports) > 0 {
 		if deps.CheckPorts != nil {

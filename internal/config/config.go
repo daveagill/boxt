@@ -151,6 +151,7 @@ type VMConfig struct {
 	PortForwarding string        `yaml:"port_forwarding,omitempty"`
 	AutoStart      *bool         `yaml:"auto_start,omitempty"`
 	Ports          []PortForward `yaml:"ports,omitempty"`
+	Mounts         []Mount       `yaml:"mounts,omitempty"`
 }
 
 // PortForward requests a controlled guest-to-host port forward. It is
@@ -214,8 +215,8 @@ version: 1
 
 vm:
   image: ubuntu-24.04
-  # guest CPUs and memory; applied when the VM is created, so change them by
-  # running "boxt destroy" then "boxt up"
+  # guest CPUs and memory; applied when the VM is created, so change them with
+  # "boxt recreate"
   cpus: 4
   memory: 8GiB
   # auto: forward guest loopback services to host loopback (vite, servers)
@@ -223,6 +224,11 @@ vm:
   port_forwarding: auto
   # create/start the VM automatically before run and shell commands
   auto_start: true
+  # additional host paths mounted into the guest; writable is required
+  # mounts:
+  #   - host: /absolute/host/path
+  #     guest: /mnt/data
+  #     writable: true
 
 workspace:
   # ff: merge only when the target branch can fast-forward

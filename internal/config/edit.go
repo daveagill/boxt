@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 
@@ -24,6 +25,19 @@ type ErrTargetExists struct {
 
 func (e *ErrTargetExists) Error() string {
 	return fmt.Sprintf("run target %q already exists with a different command", e.Name)
+}
+
+// ErrMountNotFound is returned when removing an undeclared mount.
+var ErrMountNotFound = errors.New("mount is not declared")
+
+// ErrMountAmbiguous is returned when a remove target matches both a guest path
+// and a different host path.
+type ErrMountAmbiguous struct {
+	Target string
+}
+
+func (e *ErrMountAmbiguous) Error() string {
+	return fmt.Sprintf("%q matches both a guest path and a different host path; remove it by the guest path", e.Target)
 }
 
 // AddTool adds or updates a tool declaration while preserving unrelated YAML
@@ -121,6 +135,120 @@ func RemoveTool(path, name string) error {
 	})
 }
 
+// AddMount adds an additional host mount while preserving unrelated YAML. The
+// write is atomic and the result must still validate.
+func AddMount(configPath string, mount Mount) error {
+	if mount.Writable == nil {
+		return errors.New("mount writable is required (true or false)")
+	}
+	return mutateConfig(configPath, func(root *yaml.Node) error {
+		vm, err := getOrCreateMapping(root, "vm")
+		if err != nil {
+			return err
+		}
+		mounts, err := getOrCreateSequence(vm, "mounts")
+		if err != nil {
+			return err
+		}
+		guest := path.Clean(mount.Guest)
+		host := filepath.Clean(mount.Host)
+		for _, node := range mounts.Content {
+			var existing Mount
+			if err := node.Decode(&existing); err != nil {
+				return fmt.Errorf("parse mount entry: %w", err)
+			}
+			if existing.GuestPath() == guest {
+				return fmt.Errorf("guest mount path %s is already configured", guest)
+			}
+			if filepath.Clean(existing.Host) == host {
+				return fmt.Errorf("host path %s is already mounted at %s", host, existing.GuestPath())
+			}
+		}
+		node, err := mountNode(mount)
+		if err != nil {
+			return err
+		}
+		mounts.Content = append(mounts.Content, node)
+		return nil
+	})
+}
+
+// RemoveMount removes a configured mount by guest path or by host path and
+// returns the removed entry. Removed mounts stay active in an existing VM until
+// it is recreated.
+func RemoveMount(configPath, target string) (Mount, error) {
+	var removed Mount
+	err := mutateConfig(configPath, func(root *yaml.Node) error {
+		_, vm := findMapEntry(root, "vm")
+		if vm == nil {
+			return ErrMountNotFound
+		}
+		mounts, err := getOrCreateSequence(vm, "mounts")
+		if err != nil {
+			return err
+		}
+
+		guestIdx, guestMount := findMount(mounts, func(m Mount) bool {
+			return m.GuestPath() == path.Clean(target)
+		})
+		hostIdx, hostMount := findMount(mounts, func(m Mount) bool {
+			return filepath.Clean(m.Host) == filepath.Clean(target)
+		})
+		switch {
+		case guestIdx < 0 && hostIdx < 0:
+			return ErrMountNotFound
+		case guestIdx >= 0 && hostIdx >= 0 && guestIdx != hostIdx:
+			return &ErrMountAmbiguous{Target: target}
+		}
+
+		idx := guestIdx
+		if idx < 0 {
+			idx = hostIdx
+		}
+		removed = guestMount
+		if idx == hostIdx {
+			removed = hostMount
+		}
+		mounts.Content = append(mounts.Content[:idx], mounts.Content[idx+1:]...)
+		if len(mounts.Content) == 0 {
+			removeMapEntry(vm, "mounts")
+		}
+		return nil
+	})
+	if err != nil {
+		return Mount{}, err
+	}
+	return removed, nil
+}
+
+func findMount(mounts *yaml.Node, match func(Mount) bool) (int, Mount) {
+	for i, node := range mounts.Content {
+		var mount Mount
+		if err := node.Decode(&mount); err != nil {
+			continue
+		}
+		if match(mount) {
+			return i, mount
+		}
+	}
+	return -1, Mount{}
+}
+
+func mountNode(mount Mount) (*yaml.Node, error) {
+	data, err := yaml.Marshal(&mount)
+	if err != nil {
+		return nil, fmt.Errorf("encode mount: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("encode mount: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return nil, errors.New("encode mount: empty document")
+	}
+	return doc.Content[0], nil
+}
+
 func mutateConfig(path string, mutate func(root *yaml.Node) error) error {
 	target, err := resolveConfigPath(path)
 	if err != nil {
@@ -203,6 +331,35 @@ func getOrCreateMapping(parent *yaml.Node, keyName string) (*yaml.Node, error) {
 		return nil, fmt.Errorf("configuration field %s must be a mapping", keyName)
 	}
 	return value, nil
+}
+
+func getOrCreateSequence(parent *yaml.Node, keyName string) (*yaml.Node, error) {
+	key, value := findMapEntry(parent, keyName)
+	if key == nil {
+		key = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: keyName}
+		value = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		parent.Content = append(parent.Content, key, value)
+		return value, nil
+	}
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		value.Kind = yaml.SequenceNode
+		value.Tag = "!!seq"
+		value.Value = ""
+		return value, nil
+	}
+	if value.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("configuration field %s must be a list", keyName)
+	}
+	return value, nil
+}
+
+func removeMapEntry(parent *yaml.Node, keyName string) {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == keyName {
+			parent.Content = append(parent.Content[:i], parent.Content[i+2:]...)
+			return
+		}
+	}
 }
 
 func setTool(tools *yaml.Node, name, version string) {

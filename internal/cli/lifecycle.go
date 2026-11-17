@@ -124,6 +124,11 @@ func (a *App) startVM(ctx context.Context, p *project.Project, paths projectPath
 	if status.Exists && hasStored && stored != lima.Fingerprint(opts) {
 		return false, &configDriftError{VM: name}
 	}
+	if !status.Running {
+		if err := config.ValidateMountSources(p.Config.VM.Mounts); err != nil {
+			return false, err
+		}
+	}
 	if err := lima.WriteFingerprint(paths.VMDir, lima.Fingerprint(opts)); err != nil {
 		return false, err
 	}
@@ -164,6 +169,7 @@ func (a *App) vmOptions(p *project.Project, paths projectPaths) lima.VMOptions {
 		Memory:         p.Config.VM.Memory,
 		PortForwarding: p.Config.VM.PortForwarding,
 		Ports:          p.Config.VM.Ports,
+		Mounts:         p.Config.VM.Mounts,
 	}
 }
 
@@ -414,6 +420,13 @@ func (a *App) status(ctx context.Context) error {
 	}
 	fmt.Fprintf(a.Out, "Project mount:     %s (host %s)\n", lima.GuestProjectPath, p.Root)
 	fmt.Fprintf(a.Out, "Workspaces mount:  %s (host %s)\n", lima.WorkspacesGuestDir(p.ID), paths.WorkspacesDir)
+	for _, m := range p.Config.VM.Mounts {
+		mode := "rw"
+		if !m.WritableEnabled() {
+			mode = "ro"
+		}
+		fmt.Fprintf(a.Out, "Extra mount:       %s (host %s, %s)\n", m.GuestPath(), m.Host, mode)
+	}
 
 	tools := "none declared"
 	if names := p.Config.ToolNames(); len(names) > 0 {

@@ -229,6 +229,38 @@ vm:
 	}
 }
 
+func TestRunChecksAdditionalMounts(t *testing.T) {
+	deps := baseDeps(t)
+	dir := t.TempDir()
+	p, err := project.Init(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(host, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "version: 1\nvm:\n  mounts:\n    - host: " + host + "\n      guest: /mnt/data\n      writable: true\n"
+	if err := os.WriteFile(p.ConfigPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.LookupProject = func() (*project.Project, error) { return project.Open(dir) }
+	report := Run(context.Background(), deps)
+	if c := find(report, "mounts"); c.Status != OK {
+		t.Fatalf("mounts = %#v\n%s", c, Format(report, false))
+	}
+
+	missingCfg := "version: 1\nvm:\n  mounts:\n    - host: " + filepath.Join(dir, "missing") + "\n      guest: /mnt/missing\n      writable: false\n"
+	if err := os.WriteFile(p.ConfigPath, []byte(missingCfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report = Run(context.Background(), deps)
+	c := find(report, "mounts")
+	if c.Status != FAIL || !strings.Contains(c.Message, "cannot access host path") {
+		t.Fatalf("mounts = %#v\n%s", c, Format(report, false))
+	}
+}
+
 func TestFormatVerboseShowsDetails(t *testing.T) {
 	report := Report{Checks: []Check{{Status: OK, Label: "git", Message: "2.55.0", Detail: "git version 2.55.0", Hint: "hidden"}}}
 	if strings.Contains(Format(report, false), "Detail") || strings.Contains(Format(report, false), "git version") {

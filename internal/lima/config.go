@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -55,6 +56,7 @@ type VMOptions struct {
 	Memory         string
 	PortForwarding string
 	Ports          []config.PortForward
+	Mounts         []config.Mount
 }
 
 type limaImage struct {
@@ -163,6 +165,33 @@ func GenerateConfig(opts VMOptions) ([]byte, error) {
 		},
 		Containerd: limaContainerd{System: false, User: false},
 	}
+	seenGuests := map[string]bool{
+		GuestProjectPath:                   true,
+		WorkspacesGuestDir(opts.ProjectID): true,
+	}
+	for i, m := range opts.Mounts {
+		if m.Host == "" || !filepath.IsAbs(m.Host) {
+			return nil, fmt.Errorf("mount %d host must be an absolute path", i)
+		}
+		if m.Guest == "" || !path.IsAbs(m.Guest) {
+			return nil, fmt.Errorf("mount %d guest path must be absolute", i)
+		}
+		host := filepath.Clean(m.Host)
+		guest := path.Clean(m.Guest)
+		if guest == "/" || guest == "/workspace" || guest == "/workspaces" ||
+			strings.HasPrefix(guest, "/workspace/") || strings.HasPrefix(guest, "/workspaces/") {
+			return nil, fmt.Errorf("mount %d guest path %s conflicts with a built-in mount", i, guest)
+		}
+		if seenGuests[guest] {
+			return nil, fmt.Errorf("mount %d guest path %s is duplicated", i, guest)
+		}
+		seenGuests[guest] = true
+		doc.Mounts = append(doc.Mounts, limaMount{
+			Location:   host,
+			MountPoint: guest,
+			Writable:   m.WritableEnabled(),
+		})
+	}
 	propagateProxy := false
 	doc.PropagateProxyEnv = &propagateProxy
 	for _, p := range opts.Ports {
@@ -228,6 +257,25 @@ func Fingerprint(opts VMOptions) string {
 		Host   int
 		HostIP string
 	}
+	type mount struct {
+		Host     string
+		Guest    string
+		Writable bool
+	}
+	mounts := make([]mount, 0, len(opts.Mounts))
+	for _, m := range opts.Mounts {
+		mounts = append(mounts, mount{
+			Host:     filepath.Clean(m.Host),
+			Guest:    path.Clean(m.Guest),
+			Writable: m.WritableEnabled(),
+		})
+	}
+	sort.Slice(mounts, func(i, j int) bool {
+		if mounts[i].Guest != mounts[j].Guest {
+			return mounts[i].Guest < mounts[j].Guest
+		}
+		return mounts[i].Host < mounts[j].Host
+	})
 	ports := make([]port, 0, len(opts.Ports))
 	for _, p := range opts.Ports {
 		ip := p.HostIP
@@ -250,6 +298,9 @@ func Fingerprint(opts VMOptions) string {
 		Memory        string
 		Forwarding    string
 		Ports         []port
+		// Omit empty mounts so the fingerprint of projects without custom
+		// mounts stays unchanged after upgrading boxt.
+		Mounts []mount `json:"Mounts,omitempty"`
 	}{
 		ProjectID:     opts.ProjectID,
 		ProjectRoot:   filepath.Clean(opts.ProjectRoot),
@@ -258,6 +309,7 @@ func Fingerprint(opts VMOptions) string {
 		Memory:        memory,
 		Forwarding:    portForwarding,
 		Ports:         ports,
+		Mounts:        mounts,
 	}
 	encoded, _ := json.Marshal(payload)
 	sum := sha256.Sum256(encoded)
@@ -315,22 +367,30 @@ func ValidateGenerated(data []byte) error {
 		return fmt.Errorf("generated config has invalid resources")
 	}
 	foundProject, foundWorkspaces := false, false
+	seenGuests := map[string]bool{}
 	for _, m := range doc.Mounts {
 		if m.Location == "" || !filepath.IsAbs(m.Location) {
 			return fmt.Errorf("generated mount location is not absolute: %q", m.Location)
 		}
-		switch m.MountPoint {
-		case GuestProjectPath:
-			foundProject = true
-		case "/workspaces":
-			// not used; project-scoped mount is required
-		default:
-			if strings.HasPrefix(m.MountPoint, GuestWorkspaces+"/") {
-				foundWorkspaces = true
-			}
+		if m.MountPoint == "" || !path.IsAbs(m.MountPoint) {
+			return fmt.Errorf("generated mount point is not absolute: %q", m.MountPoint)
 		}
-		if !m.Writable {
-			return fmt.Errorf("generated mount %s is not writable", m.MountPoint)
+		guest := path.Clean(m.MountPoint)
+		if seenGuests[guest] {
+			return fmt.Errorf("generated mount point is duplicated: %s", guest)
+		}
+		seenGuests[guest] = true
+		switch {
+		case guest == GuestProjectPath:
+			foundProject = true
+			if !m.Writable {
+				return fmt.Errorf("generated project mount is not writable")
+			}
+		case strings.HasPrefix(guest, GuestWorkspaces+"/"):
+			foundWorkspaces = true
+			if !m.Writable {
+				return fmt.Errorf("generated workspace mount is not writable")
+			}
 		}
 	}
 	if !foundProject || !foundWorkspaces {

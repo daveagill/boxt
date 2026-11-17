@@ -95,6 +95,8 @@ func (c *Config) Validate() error {
 		v.add("vm.port_forwarding", "must be %q or %q", PortForwardingAuto, PortForwardingExplicit)
 	}
 
+	validateMounts(v, c.VM.Mounts)
+
 	switch c.Workspace.Merge {
 	case MergeModeFF, MergeModeRebase:
 	default:

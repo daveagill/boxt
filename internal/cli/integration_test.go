@@ -264,6 +264,85 @@ hooks:
 	}
 }
 
+func TestIntegrationCustomMounts(t *testing.T) {
+	if os.Getenv("BOXT_INTEGRATION") != "1" {
+		t.Skip("set BOXT_INTEGRATION=1 to run Lima integration tests")
+	}
+	bin := os.Getenv("BOXT_BIN")
+	if bin == "" {
+		t.Skip("set BOXT_BIN to a built boxt binary")
+	}
+	limactl := os.Getenv("BOXT_LIMACTL")
+	if limactl == "" {
+		var err error
+		limactl, err = exec.LookPath("limactl")
+		if err != nil {
+			t.Skip("limactl not installed")
+		}
+	}
+	t.Setenv("LIMA_HOME", shortLimaHome(t))
+	t.Setenv("PATH", filepath.Dir(limactl)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dataDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataDir)
+
+	projectDir := t.TempDir()
+	p, err := project.Init(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rwHost := t.TempDir()
+	roHost := t.TempDir()
+	if err := os.WriteFile(filepath.Join(roHost, "from-host.txt"), []byte("host-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `version: 1
+vm:
+  cpus: 2
+  memory: ` + integrationMemory() + `
+  mounts:
+    - host: ` + rwHost + `
+      guest: /mnt/rw
+      writable: true
+    - host: ` + roHost + `
+      guest: /mnt/ro
+      writable: false
+`
+	if err := os.WriteFile(filepath.Join(projectDir, project.ConfigRelPath), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &lima.Client{Bin: limactl, Runner: command.ExecRunner{}}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		_ = client.Delete(cleanupCtx, p.VMName())
+	})
+	out, code := runInPTY(t, bin, projectDir, []string{"up"}, "")
+	if code != 0 {
+		t.Fatalf("up exit %d; output:\n%s", code, out)
+	}
+
+	out, code = runInPTY(t, bin, projectDir, []string{
+		"run", "--", "/bin/sh", "-c",
+		"printf guest > /mnt/rw/from-guest.txt && cat /mnt/ro/from-host.txt",
+	}, "")
+	if code != 0 {
+		t.Fatalf("rw mount exit %d; output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "host-data") {
+		t.Fatalf("read-only mount content missing:\n%s", out)
+	}
+	if data, err := os.ReadFile(filepath.Join(rwHost, "from-guest.txt")); err != nil || string(data) != "guest" {
+		t.Fatalf("host did not see guest write: %q, %v", data, err)
+	}
+	out, code = runInPTY(t, bin, projectDir, []string{
+		"run", "--", "/bin/sh", "-c", "printf nope > /mnt/ro/from-guest.txt",
+	}, "")
+	if code == 0 {
+		t.Fatalf("read-only mount accepted a guest write:\n%s", out)
+	}
+}
+
 func runInPTY(t *testing.T, bin, dir string, args []string, input string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)

@@ -1,7 +1,11 @@
 package lima
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,6 +146,159 @@ func TestGenerateConfigRejectsOverlappingMounts(t *testing.T) {
 	}
 	if _, err := GenerateConfig(opts); err == nil || !strings.Contains(err.Error(), "outside the project root") {
 		t.Fatalf("expected overlapping-mount error, got %v", err)
+	}
+}
+
+func TestGenerateConfigCustomMounts(t *testing.T) {
+	opts := testOptions(t)
+	writable := true
+	readOnly := false
+	opts.Mounts = []config.Mount{
+		{Host: "/tmp/boxt-data", Guest: "/mnt/data", Writable: &writable},
+		{Host: "/tmp/boxt-cache", Guest: "/mnt/cache", Writable: &readOnly},
+	}
+	data, err := GenerateConfig(opts)
+	if err != nil {
+		t.Fatalf("GenerateConfig: %v", err)
+	}
+	if err := ValidateGenerated(data); err != nil {
+		t.Fatalf("ValidateGenerated: %v\n%s", err, data)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"location: /tmp/boxt-data",
+		"mountPoint: /mnt/data",
+		"location: /tmp/boxt-cache",
+		"mountPoint: /mnt/cache",
+		"writable: false",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("generated config missing %q:\n%s", want, text)
+		}
+	}
+	locations, err := MountLocations(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locations) != 4 || locations[2] != "/tmp/boxt-data" || locations[3] != "/tmp/boxt-cache" {
+		t.Fatalf("mounts = %#v", locations)
+	}
+}
+
+func TestGenerateConfigRejectsBadMounts(t *testing.T) {
+	base := testOptions(t)
+	writable := true
+	if _, err := GenerateConfig(withMounts(base, []config.Mount{{Host: "relative", Guest: "/mnt/data", Writable: &writable}})); err == nil {
+		t.Fatal("relative host accepted")
+	}
+	if _, err := GenerateConfig(withMounts(base, []config.Mount{{Host: "/tmp/data", Guest: "relative", Writable: &writable}})); err == nil {
+		t.Fatal("relative guest accepted")
+	}
+	if _, err := GenerateConfig(withMounts(base, []config.Mount{
+		{Host: "/tmp/a", Guest: "/mnt/data", Writable: &writable},
+		{Host: "/tmp/b", Guest: "/mnt/data", Writable: &writable},
+	})); err == nil {
+		t.Fatal("duplicate guest accepted")
+	}
+	if _, err := GenerateConfig(withMounts(base, []config.Mount{{Host: "/tmp/a", Guest: "/workspace/data", Writable: &writable}})); err == nil {
+		t.Fatal("guest shadowing the project mount accepted")
+	}
+}
+
+func withMounts(opts VMOptions, mounts []config.Mount) VMOptions {
+	opts.Mounts = mounts
+	return opts
+}
+
+func TestFingerprintIncludesMounts(t *testing.T) {
+	base := testOptions(t)
+	baseFingerprint := Fingerprint(base)
+
+	rw := true
+	readOnly := false
+	first := withMounts(base, []config.Mount{
+		{Host: "/tmp/a", Guest: "/mnt/a", Writable: &rw},
+		{Host: "/tmp/b", Guest: "/mnt/b", Writable: &readOnly},
+	})
+	second := withMounts(base, []config.Mount{
+		{Host: "/tmp/b", Guest: "/mnt/b", Writable: &readOnly},
+		{Host: "/tmp/a", Guest: "/mnt/a", Writable: &rw},
+	})
+	if Fingerprint(first) != Fingerprint(second) {
+		t.Fatal("fingerprint depends on mount declaration order")
+	}
+	if Fingerprint(first) == baseFingerprint {
+		t.Fatal("adding mounts did not change the fingerprint")
+	}
+	changedWritable := withMounts(base, []config.Mount{
+		{Host: "/tmp/a", Guest: "/mnt/a", Writable: &readOnly},
+		{Host: "/tmp/b", Guest: "/mnt/b", Writable: &readOnly},
+	})
+	if Fingerprint(changedWritable) == Fingerprint(first) {
+		t.Fatal("changing writable did not change the fingerprint")
+	}
+}
+
+func TestFingerprintWithoutMountsMatchesPreviousFormat(t *testing.T) {
+	opts := testOptions(t)
+	memory := opts.Memory
+	if b, err := config.MemoryBytes(memory); err == nil {
+		memory = fmt.Sprintf("%d", b)
+	}
+	type port struct {
+		Guest  int
+		Host   int
+		HostIP string
+	}
+	payload := struct {
+		ProjectID     string
+		ProjectRoot   string
+		WorkspacesDir string
+		CPUs          int
+		Memory        string
+		Forwarding    string
+		Ports         []port
+	}{
+		ProjectID:     opts.ProjectID,
+		ProjectRoot:   filepath.Clean(opts.ProjectRoot),
+		WorkspacesDir: filepath.Clean(opts.WorkspacesDir),
+		CPUs:          opts.CPUs,
+		Memory:        memory,
+		Forwarding:    config.PortForwardingAuto,
+		Ports:         []port{},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(encoded)
+	want := hex.EncodeToString(sum[:])
+	if got := Fingerprint(opts); got != want {
+		t.Fatalf("fingerprint changed for a project without mounts: got %s, want %s", got, want)
+	}
+}
+
+func TestValidateGeneratedAllowsReadOnlyCustomMount(t *testing.T) {
+	data := []byte(`images:
+- location: x
+  arch: aarch64
+cpus: 1
+memory: 1GiB
+user:
+  name: boxt
+mounts:
+- location: /tmp/project
+  mountPoint: /workspace
+  writable: true
+- location: /tmp/workspaces
+  mountPoint: /workspaces/abc
+  writable: true
+- location: /tmp/data
+  mountPoint: /mnt/data
+  writable: false
+`)
+	if err := ValidateGenerated(data); err != nil {
+		t.Fatalf("ValidateGenerated: %v", err)
 	}
 }
 
