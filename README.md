@@ -166,6 +166,9 @@ make build
 | `boxt workspace create\|list\|path\|run\|shell\|switch` | create and use Git worktrees. See [Workspaces](#workspaces). |
 | `boxt shell-init <shell>` | print the shell integration that powers `workspace switch`. See [Entering a workspace](#entering-a-workspace). |
 | `boxt workspace merge\|rebase\|remove` | land, replay or discard a workspace. See [Workspaces](#workspaces). |
+| `boxt config show\|get\|set\|unset\|validate` | inspect and edit scalar configuration. See [Editing configuration](#editing-configuration). |
+| `boxt target add\|remove\|list\|set-default` | manage named run targets. See [Managing run targets](#managing-run-targets). |
+| `boxt port add\|remove\|list` | inspect and edit explicit port forwarding. See [Networking and port forwarding](#networking-and-port-forwarding). |
 | `boxt tool add\|remove\|list` | declare tools; `boxt provision` reconciles them. See [Tools](#tools). |
 | `boxt mount add\|remove\|list` | declare additional host paths mounted into the VM. See [Additional mounts](#additional-mounts). |
 | `boxt hooks status\|trust\|clear` | inspect and approve lifecycle hooks. See [Lifecycle hooks](#lifecycle-hooks). |
@@ -201,7 +204,7 @@ produces guidance:
 ```text
 Error: unknown run target: codex
 
-Define it under run.targets in .boxt/config.yaml,
+Add it with `boxt target add codex -- <command>` or edit run.targets in .boxt/config.yaml,
 or use `boxt run -- codex` to execute the command directly.
 ```
 
@@ -212,6 +215,26 @@ receive one. Guest exit statuses become boxt's exit status.
 
 Coding agents are ordinary interactive run targets; presets such as `opencode`,
 `codex` and `claude` only scaffold the tool and target.
+
+### Managing run targets
+
+`boxt target` edits `run.targets` and `run.default` without touching the VM:
+
+```bash
+boxt target add dev -- npm run dev
+boxt target add agent --interactive -- opencode
+boxt target add web --port-base 3000 --port-env PORT -- npm run dev
+boxt target add dev --set-default -- npm run dev
+boxt target list
+boxt target set-default dev
+boxt target unset-default
+boxt target remove test
+```
+
+Adding an identical target is a no-op; adding a different definition for an
+existing name is refused, so remove it first. Removing the default target also
+clears `run.default`. `target list` shows the default marker, the interactive
+flag, the configured port base and the command.
 
 ## Workspaces
 
@@ -323,7 +346,21 @@ or run with `--abort` to abort the rebase and restore the original state.
 
 `boxt workspace remove` refuses uncommitted changes and ignored files such as
 `.env`; `--force` discards them. With
-`seed.allow_remove: true`, ignored files matching the [seed rules](#seed-rules)). are not considered a blocker that requires force.
+`seed.allow_remove: true`, ignored files matching the [seed rules](#seed-rules)
+are not a blocker that requires force.
+
+Use `--dry-run` to preview the decision without changing anything:
+
+```bash
+boxt workspace remove feature-a --dry-run
+boxt workspace remove feature-a --dry-run --force
+```
+
+The preview reports tracked changes, non-ignored untracked files, which ignored
+files would be deleted, which ignored paths do not match the seed rules, and
+whether Git has locked the worktree or left an operation in progress. It never
+removes the worktree, prunes stale metadata, runs lifecycle hooks, or requires
+hook approval, and it exits 0 even when removal would be refused.
 
 ## Presets
 
@@ -480,8 +517,36 @@ run:
 ```
 
 Configuration is validated with field paths: unsupported versions and unknown
-fields are rejected. Tool edits are atomic and preserve comments and unrelated
-configuration.
+fields are rejected. Edits are atomic, locked across processes, and preserve
+comments, unrelated YAML and symlinked config files.
+
+### Editing configuration
+
+`boxt config` owns scalar settings; structured sections have typed commands:
+
+```bash
+boxt config show                    # print .boxt/config.yaml as stored
+boxt config get vm.memory           # effective value after defaults
+boxt config set vm.memory 16GiB
+boxt config set vm.auto_start false
+boxt config set workspace.merge rebase
+boxt config set seed.include .env --append
+boxt config unset seed.include .env
+boxt config validate
+```
+
+| Key | Command |
+|---|---|
+| `tools` | `boxt tool` |
+| `run.targets`, `run.default` | `boxt target` |
+| `vm.ports` | `boxt port` |
+| `vm.mounts` | `boxt mount` |
+| `hooks` | hand-edited; `boxt hooks status` shows the result |
+| `version`, `vm.image` | read-only in this MVP |
+
+`boxt config set` never updates the VM creation fingerprint. Changes to
+`vm.cpus`, `vm.memory`, `vm.port_forwarding`, `vm.ports` or `vm.mounts` print a
+reminder to run `boxt recreate`.
 
 ### Changing VM settings
 
@@ -600,6 +665,22 @@ vm:
       host_ip: 127.0.0.1   # default
 ```
 
+`boxt port` edits those mappings, and `boxt port list` shows both the declared
+mappings and the effective guest port for every target that declares
+`port_base`, including whether each port is reachable in the current mode:
+
+```bash
+boxt port add 3000                 # guest 3000 -> host 3000 on 127.0.0.1
+boxt port add 3000:8080
+boxt port add 3000:8080@127.0.0.1
+boxt port list
+boxt port remove 3000
+```
+
+`boxt config set vm.port_forwarding auto|explicit` changes the mode. Port changes
+are applied at VM creation, so run `boxt recreate` afterwards. `boxt port list`
+is read-only and works even when the VM does not exist.
+
 boxt checks explicitly requested host ports before starting the VM and reports a
 conflict rather than choosing another port. Binding `host_ip: 0.0.0.0` exposes a
 service on your network; the default loopback binding does not.
@@ -634,8 +715,10 @@ must honor the variable (Vite reads `PORT`, for example). Because `boxt run` and
 inside a named workspace uses that workspace's offset automatically.
 
 In `auto` mode the guest port is reachable on the same host port; in `explicit`
-mode add a `vm.ports` mapping for each `port_base + offset` you need. Port offsets
-are an execution-time convention and need no VM recreation.
+mode add a `vm.ports` mapping for each `port_base + offset` you need. `boxt port
+list` shows the effective guest port for every workspace and marks unmapped ports
+as `guest-only (explicit)`. Port offsets are an execution-time convention and need
+no VM recreation; `vm.ports` itself is applied at creation.
 
 ## Security
 

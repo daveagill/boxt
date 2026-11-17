@@ -75,6 +75,14 @@ docs/                     deeper reference (troubleshooting)
 - Config version is `1`; unknown fields and unsupported versions are rejected.
 - Tool/config edits must be atomic, locked across processes, and preserve
   comments, unrelated YAML and symlinked config files.
+- `boxt config` is the supported generic editor, but only for scalar keys via an
+  explicit allowlist. Structured sections keep one owner: `tools` → `boxt tool`,
+  `run.targets`/`run.default` → `boxt target`, `vm.ports` → `boxt port`,
+  `vm.mounts` → `boxt mount`, `hooks` → hand-edited. Do not add a second writer
+  for a key.
+- `boxt config set` must never update the VM creation fingerprint. When a
+  fingerprint key changes, print the `boxt recreate` hint; `up` still refuses on
+  drift.
 - `vm.port_forwarding` supports:
   - `auto` (default): Lima dynamic forwarding of guest loopback services to host
     loopback. This is deliberate, requested for Vite/agent workflows.
@@ -120,6 +128,16 @@ docs/                     deeper reference (troubleshooting)
 ### Execution
 
 - All run/shell/workspace execution goes through `internal/executor`.
+- `boxt config`, `boxt target` and `boxt port` are configuration commands only.
+  They must not start the VM, call Lima, or execute guest commands.
+- `boxt target add` accepts a command only after `--`; it never silently
+  overwrites a different existing target definition. Removing the default target
+  clears `run.default` in the same atomic write.
+- `boxt port add` parses `GUEST[:HOST][@HOST_IP]` without a shell, defaults the
+  host to the guest port and the bind address to loopback, and refuses guest port
+  22 and duplicate bindings. `boxt port list` is read-only, works without Lima,
+  and reports per-workspace effective ports, `guest-only (explicit)` mappings and
+  offset collisions.
 - `boxt`, `boxt run` and `boxt shell` execute in the workspace whose checkout
   contains the current directory, falling back to the default workspace. The
   lookup is host-side (`workspace.Manager.NameForHostPath`) and derived per
@@ -239,6 +257,11 @@ docs/                     deeper reference (troubleshooting)
   or otherwise unsafe. Reject duplicates.
 - Creation is atomic: verify the checkout and write metadata; roll back the
   worktree (and only a newly-created branch) if post-add setup fails.
+- `workspace remove --dry-run` is strictly read-only: it reports the removal
+  plan, never removes the worktree, never prunes stale metadata, never runs
+  lifecycle hooks, and does not require hook trust. It exits 0 even when removal
+  would be refused. `PlanRemoval` and `RemoveWithOptions` must share one policy
+  source; do not duplicate the checks.
 - Removal:
   - refuse uncommitted tracked changes and non-ignored untracked files
     (`--force` to discard);
